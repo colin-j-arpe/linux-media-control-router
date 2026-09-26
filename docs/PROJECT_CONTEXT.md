@@ -800,8 +800,10 @@ Use native Rust/D-Bus/X11 APIs for production functionality.
 
 # Immediate Development Task
 
-Milestone 1 is complete. After user approval for Milestone 2, begin with
-the MPRIS discovery component.
+Milestone 1 is complete. The user has approved Milestone 2, the MPRIS
+discovery component. Dependency research has begun and the project
+toolchain has been upgraded and Rust edition 2024 is enabled. Discovery
+implementation is next.
 
 Before adding dependencies, verify current Rust crate choices and
 versions rather than relying on old examples.
@@ -846,6 +848,30 @@ version is not a minimum supported Rust version commitment. Check current
 crate versions and their compiler requirements before adding dependencies
 in Milestone 2.
 
+## Milestone 2 started — 2026-09-26
+
+The installed toolchain is Rust/Cargo 1.82.0. Current published `zbus`
+documentation identifies version 5.19.0, whose manifest requires Rust
+1.87 and uses Rust edition 2024:
+`https://docs.rs/crate/zbus/5.19.0/source/Cargo.toml`.
+
+The original compiler cannot build that release. The user approved a
+toolchain upgrade. Rust 1.98.1, identified by the official stable channel
+manifest, was installed alongside the existing toolchain. The repository's
+`rust-toolchain.toml` selects 1.98.1 with rustfmt and Clippy; the global
+default toolchain was left unchanged.
+
+Verified `rustc`, Cargo, rustfmt, and Clippy versions, then successfully
+ran `cargo build --locked --offline`, `cargo run --locked --offline`, and
+`cargo fmt --check` with the new toolchain. Rustup reported an error during
+its subsequent self-update step, after installing the toolchain; the
+installed tools and project build were independently verified to work.
+
+The user approved Rust edition 2024. Ran `cargo fix --edition` with the
+new toolchain, changed `Cargo.toml` to edition 2024, and verified the build
+and formatting. The skeleton required no source changes. No dependencies
+have been added yet; discovery remains unimplemented.
+
 ## License decision — 2026-09-26
 
 The user selected Apache License 2.0 for the project. The full, unmodified
@@ -861,7 +887,8 @@ the original license text and should remain unchanged.
 ## Development workflow
 
 - Proceed incrementally, with user approval before each new milestone.
-  Milestone 1 was explicitly authorized; Milestone 2 is awaiting approval.
+  Milestones 1 and 2 have been explicitly authorized. Decisions within
+  Milestone 2 still require clarification where noted above.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.

@@ -6,7 +6,8 @@ The initial target is Linux Mint Cinnamon on X11.
 
 ## Building from source
 
-Install Rust and Cargo, with the rustfmt component for formatting checks.
+Install Rust using rustup. The repository's `rust-toolchain.toml` selects
+Rust 1.98.1 with rustfmt and Clippy.
 
 From the repository root:
 
