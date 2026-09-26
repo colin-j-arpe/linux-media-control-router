@@ -800,7 +800,8 @@ Use native Rust/D-Bus/X11 APIs for production functionality.
 
 # Immediate Development Task
 
-Begin with the MPRIS discovery component.
+Milestone 1 is complete. After user approval for Milestone 2, begin with
+the MPRIS discovery component.
 
 Before adding dependencies, verify current Rust crate choices and
 versions rather than relying on old examples.
@@ -816,6 +817,63 @@ Wayland support, browser-tab integration, or production Cinnamon
 keybinding recovery simultaneously.
 
 Build and verify one layer at a time.
+
+------------------------------------------------------------------------
+
+# Development Progress
+
+## Milestone 1 completed — 2026-09-26
+
+The repository already contained a normal Cargo binary skeleton and an
+initialized Git repository. The existing skeleton was inspected and
+verified without regenerating it.
+
+- Package: `media-router`, version `0.1.0`, Rust edition `2021`.
+- Entry point: `src/main.rs`, currently prints `Hello, world!` and exits.
+- No external dependencies have been added.
+- `Cargo.lock` is tracked; `.gitignore` excludes `/target`.
+- The placeholder README was replaced with a project description,
+  build commands, and a link to the architectural context. Following
+  user review, progress reports and tutorial explanations were removed
+  from the README.
+- Verified using installed `rustc 1.82.0` and `cargo 1.82.0`:
+  `cargo build --locked --offline`, `cargo run --locked --offline`, and
+  `cargo fmt --check` all succeeded. The run printed `Hello, world!`.
+
+This verifies the skeleton only; MPRIS discovery, selection, routing,
+input capture, and the tray UI remain unimplemented. The tested toolchain
+version is not a minimum supported Rust version commitment. Check current
+crate versions and their compiler requirements before adding dependencies
+in Milestone 2.
+
+## License decision — 2026-09-26
+
+The user selected Apache License 2.0 for the project. The full, unmodified
+license text from `https://www.apache.org/licenses/LICENSE-2.0.txt` is
+included in `LICENSE`. `Cargo.toml` declares the SPDX identifier
+`Apache-2.0`, and the README links to the license.
+
+A personalized copyright notice is pending the user's preferred
+copyright-holder name; do not infer ownership from the local username.
+The example placeholders in the standard license appendix are part of
+the original license text and should remain unchanged.
+
+## Development workflow
+
+- Proceed incrementally, with user approval before each new milestone.
+  Milestone 1 was explicitly authorized; Milestone 2 is awaiting approval.
+- Explain each step as a Rust development tutorial, including the purpose
+  of code, tools, and verification commands. Keep tutorial explanations
+  in the chat exchange, not in `README.md`.
+- Ask the user at decision points rather than silently choosing product
+  behavior or architectural policy.
+- Update this tracked document after each milestone and periodically
+  after other major changes.
+- Keep development progress reports in this document. `README.md` should
+  contain only information relevant to end users and developers who wish
+  to modify the application following launch.
+- Do not make Git commits or push upstream. The user handles all Git
+  updates; leave file changes for the user to review and commit.
 
 ------------------------------------------------------------------------
 
