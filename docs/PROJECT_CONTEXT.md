@@ -467,6 +467,21 @@ to an ephemeral MPRIS bus instance.
 `DesktopEntry` is the preferred persistent application identity when
 available.
 
+Settled during Milestone 3: players without a nonempty `DesktopEntry`
+remain selectable using their exact MPRIS `Identity` string as a fallback.
+Desktop-entry IDs and fallback identities are distinct identifier types.
+Identity matching is case-sensitive, with no trimming or normalization.
+Equal fallback identities group instances as one logical application;
+a changed Identity string requires reselection. This limitation was
+explicitly accepted by the user.
+
+For multiple instances of the selected application, keep the first
+validated matching instance while it is available. When it disappears,
+choose among the remaining known eligible instances of that same
+application using service-name ordering. If selection is made after
+instances are already known, also use service-name ordering. New arrivals
+do not displace a still-available active instance.
+
 Conceptually:
 
 ``` text
@@ -800,10 +815,11 @@ Use native Rust/D-Bus/X11 APIs for production functionality.
 
 # Immediate Development Task
 
-Milestones 1 and 2 are complete. Obtain user approval before beginning
-Milestone 3, persistent logical application selection. Define fallback
-identity rules for players without `DesktopEntry` and resolution rules
-for multiple instances before implementing persistent selection.
+Milestones 1 through 3 are complete. Obtain user approval before beginning
+Milestone 4, normalized transport actions and direct MPRIS command routing.
+Before relying on live capabilities, implement property-change tracking
+or refresh the relevant properties at dispatch time. Disk persistence
+across router restarts remains scheduled for Milestone 7.
 
 Before adding dependencies, verify current Rust crate choices and
 versions rather than relying on old examples.
@@ -931,9 +947,81 @@ The prototype takes property snapshots at admission. Continuous
 `PropertiesChanged` tracking, including partial updates and invalidated
 properties, still needs implementation before relying on live capability
 or playback state for routing/UI. Metadata tracking is also deferred.
-Persistent selection, command routing, key capture, the daemon control
-API, and tray UI remain unimplemented. The existing settled requirements
-for those layers remain unchanged.
+At completion of Milestone 2, persistent selection, command routing, key
+capture, the daemon control API, and tray UI were unimplemented. Selection
+was subsequently added in Milestone 3. The existing settled requirements
+for the remaining layers are unchanged.
+
+## Milestone 3 completed — 2026-09-26
+
+The user authorized work on persistent logical application selection.
+The discovery implementation has been reviewed. The established rule
+remains: losing the selected application must preserve its logical
+selection and must not select a different application.
+
+Approved selection requirements:
+
+- Players without `DesktopEntry` must remain available for persistent
+  selection. Do not exclude them merely because that property is absent.
+- Keep the first validated matching instance while it remains available.
+  When it disappears, choose another currently known instance of the same
+  application using service-name ordering. If no matching instance remains,
+  preserve the selected application and report it unavailable.
+- This milestone retains selection across player restarts while the
+  router runs. Disk persistence across router restarts remains in
+  Milestone 7. A temporary CLI selection argument is approved.
+
+The user approved exact MPRIS `Identity` matching as the fallback when
+`DesktopEntry` is absent, with separate identifier types. Equal fallback
+identities group instances; a changed identity requires reselection.
+
+### Implemented behavior and structure
+
+- `src/player/selection.rs` defines `ApplicationId::DesktopEntry` and
+  `ApplicationId::Identity`, preferring a nonempty desktop entry when
+  available. Missing/empty desktop entries use the exact identity string.
+- The selection manager retains user intent independently of the active
+  service/owner pair. It consumes discovery events and reports only
+  changes in selection state: unselected, unavailable, or available.
+- A `BTreeMap` provides service-name ordering when resolving a selection
+  without an active instance. A still-eligible active instance is retained.
+- Stale removal events cannot delete a newer owner of the same service.
+  Discovering other applications never changes the selected application.
+- The core supports selecting an absent application, changing selection,
+  and clearing it. It performs no D-Bus I/O or disk writes.
+- `src/cli.rs` adds `--select DESKTOP_ENTRY`, `--select-identity IDENTITY`,
+  and `--help`, using the standard library without new dependencies.
+  Invalid arguments fail before attempting a bus connection.
+- `src/main.rs` applies discovery events to the selection manager and
+  prints availability changes. The initial unavailable state means the
+  selected application has not yet been discovered/validated.
+- The CLI chooses selection at startup. To change/clear it through the
+  CLI, restart with a different argument or no selection argument.
+  Runtime control through the daemon API remains a later milestone.
+
+### Verification
+
+- All 22 tests passed: 11 library unit tests, three CLI parser unit tests,
+  and eight integration tests. Eight library tests exercise selection.
+- The executable-level lifecycle test runs both desktop-entry and fallback
+  selection on private buses. It verifies absent selection, first arrival,
+  retaining the active instance as more arrive, ordered replacement,
+  complete disappearance, return under a new service name/owner, and a
+  router restart without saved selection. Other applications stay present
+  during these transitions and are never selected as replacements.
+- Additional tests cover exact/case-sensitive fallback matching,
+  identifier-type separation, stale removals, clearing/changing selection,
+  malformed arguments, and help without a usable session bus.
+- `cargo build --locked --offline`,
+  `cargo clippy --all-targets --locked --offline -- -D warnings`,
+  `cargo fmt --check`, and `git diff --check` passed.
+- A read-only desktop run with `--select spotify` transitioned from
+  unavailable to available after validating Spotify. It exited on SIGINT
+  without sending playback commands.
+
+Selection survives media-player restarts while the router process runs.
+It is not saved across router restarts. Command routing and live property
+refresh/tracking remain unimplemented. Milestone 4 awaits user approval.
 
 ## License decision — 2026-09-26
 
@@ -950,12 +1038,15 @@ the original license text and should remain unchanged.
 ## Development workflow
 
 - Proceed incrementally, with user approval before each new milestone.
-  Milestones 1 and 2 are complete. Milestone 3 is awaiting approval.
+  Milestones 1 through 3 are complete. Milestone 4 is awaiting approval.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.
 - Ask the user at decision points rather than silently choosing product
   behavior or architectural policy.
+- Follow the standard Rust testing layout: colocated `#[cfg(test)]` unit
+  test modules and external integration tests under `tests/`. The user
+  reviewed and approved the current structure; keep it as-is.
 - Update this tracked document after each milestone and periodically
   after other major changes.
 - Keep development progress reports in this document. `README.md` should

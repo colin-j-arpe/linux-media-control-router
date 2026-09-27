@@ -32,11 +32,45 @@ discovered instance is no longer available. `PLAYER SKIPPED` explains why
 a service could not be admitted, such as missing MPRIS properties or
 `CanControl` being false.
 
-If a player does not supply `DesktopEntry`, its service name is used only
-as a diagnostic label. It is not a persistent application identifier.
+Each player is labelled with its application identifier: `DesktopEntry`
+when supplied, or its exact MPRIS `Identity` otherwise. The two kinds of
+identifier are distinct even when their text is identical.
 
 This command observes players; it does not send playback commands or
 change desktop keybindings.
+
+## Selecting an application
+
+Select by desktop-entry identifier:
+
+```sh
+cargo run --locked -- --select spotify
+```
+
+For a player without `DesktopEntry`, select by its exact displayed identity:
+
+```sh
+cargo run --locked -- --select-identity "Example Player"
+```
+
+Matching is case-sensitive. Identity values are not trimmed or normalized.
+Players without `DesktopEntry` that report identical identities are treated
+as the same application; a changed identity requires reselection.
+`--select-identity` does not match players that have a desktop-entry ID.
+
+The output reports `SELECTION AVAILABLE` with the active service and owner,
+or `SELECTION UNAVAILABLE` while the selected application is absent or has
+not yet been validated. The selection stays in place when the application
+closes and becomes available again when it returns.
+
+The first validated matching instance stays active while available. If it
+disappears, another matching instance is chosen by service-name ordering.
+The selection never switches to a different application because one closes.
+
+Selection lasts for the current router process and is not saved to disk.
+Restart the command with another selection argument to change it, or with
+no argument to observe players without selecting one. Selection currently
+reports availability; it does not control playback. Use `--help` for usage.
 
 ## Contributing
 

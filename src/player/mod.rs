@@ -1,5 +1,6 @@
 pub mod discovery;
 mod mpris;
+pub mod selection;
 
 /// One validated, running MPRIS instance. This is not a persistent selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
