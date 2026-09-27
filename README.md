@@ -70,7 +70,52 @@ The selection never switches to a different application because one closes.
 Selection lasts for the current router process and is not saved to disk.
 Restart the command with another selection argument to change it, or with
 no argument to observe players without selecting one. Selection currently
-reports availability; it does not control playback. Use `--help` for usage.
+reports availability; add `--interactive` to send transport commands.
+Use `--help` for usage.
+
+## Sending transport commands
+
+```sh
+cargo run --locked -- --select spotify --interactive
+```
+
+Wait for `SELECTION AVAILABLE`, then enter one command per line:
+
+```text
+play-pause
+next
+previous
+stop
+```
+
+`--interactive` also works with `--select-identity`. Each input targets the
+selected instance, with its current capabilities checked before dispatch.
+Commands received while no instance is available are discarded; they are
+not saved for the application's return. If the target changes before
+dispatch, that command is skipped rather than sent to a different instance.
+
+Commands run in input order, with up to 32 waiting commands. Additional
+commands are discarded with a diagnostic when that queue is full. Discovery
+continues while a command is being checked or sent.
+
+The output distinguishes:
+
+- `COMMAND ACKNOWLEDGED`: the player returned successfully; playback may
+  still be unchanged, for example if Stop was sent while already stopped.
+- `COMMAND SKIPPED`: no selection, unavailable/changed target, or an
+  unsupported action.
+- `COMMAND NOT SENT`: a pre-dispatch check failed or timed out.
+- `COMMAND PLAYER ERROR`: the player returned a D-Bus error.
+- `COMMAND UNCERTAIN`: no definitive method reply was received; the command
+  may already have executed. It is not retried.
+
+Checks and the method reply each have a two-second timeout. No transport
+method is automatically retried. Close standard input (Ctrl+D in a terminal)
+to finish pending commands and exit, or press Ctrl+C to exit immediately.
+An in-flight command may already have executed when interrupted.
+
+The application does not capture hardware keys or change desktop keybindings.
+Volume and mute are outside its transport command set.
 
 ## Contributing
 

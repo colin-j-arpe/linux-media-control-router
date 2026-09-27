@@ -815,10 +815,10 @@ Use native Rust/D-Bus/X11 APIs for production functionality.
 
 # Immediate Development Task
 
-Milestones 1 through 3 are complete. Obtain user approval before beginning
-Milestone 4, normalized transport actions and direct MPRIS command routing.
-Before relying on live capabilities, implement property-change tracking
-or refresh the relevant properties at dispatch time. Disk persistence
+Milestones 1 through 4 are complete. Obtain user approval before beginning
+Milestone 5, the Cinnamon/X11 input backend. Design exact keybinding backup,
+restoration, and crash recovery before changing desktop bindings. Routing
+now refreshes relevant capabilities at dispatch time. Disk persistence
 across router restarts remains scheduled for Milestone 7.
 
 Before adding dependencies, verify current Rust crate choices and
@@ -1020,8 +1020,87 @@ identities group instances; a changed identity requires reselection.
   without sending playback commands.
 
 Selection survives media-player restarts while the router process runs.
-It is not saved across router restarts. Command routing and live property
-refresh/tracking remain unimplemented. Milestone 4 awaits user approval.
+It is not saved across router restarts. Command routing and property
+refresh at dispatch were subsequently added in Milestone 4; continuous
+property tracking remains unimplemented.
+
+## Milestone 4 completed — 2026-09-27
+
+The user approved this milestone after merging Milestones 1–3 into main.
+The working tree was clean at the start. Selection and discovery APIs
+have been reviewed, and the current MPRIS Player specification has been
+checked against the four required actions.
+
+The mappings remain settled: Play/Pause to `PlayPause`, Stop to `Stop`,
+Previous to `Previous`, and Next to `Next`. Volume and mute remain outside
+scope. Missing selection or an unavailable selected application must not
+cause a command to be delivered to another application.
+
+### Approved decisions
+
+- Refresh only relevant properties at dispatch time, without rediscovering
+  all players. Check the known instance's service ownership and address
+  its unique owner directly. Continuous property tracking is deferred.
+- Add opt-in interactive terminal commands to the running prototype.
+- Discard unavailable/unsupported commands with diagnostics. Do not replay
+  unavailable inputs when an application returns or retry a sent transport
+  method after an error/timeout. A missing reply does not prove that the
+  player failed to execute the command.
+
+### Implemented behavior and structure
+
+- `src/player/routing.rs` defines the four normalized `TransportAction`
+  variants and dispatches native MPRIS calls using the existing zbus/Tokio
+  dependencies. No new dependencies were added.
+- Dispatch uses a captured selection/instance. It verifies service
+  ownership before and after the uncached property reads, then checks
+  that the captured target is still selected before sending the method.
+  It never retargets a pending input to a replacement instance.
+- All actions require current `CanControl`. Next/Previous additionally
+  require `CanGoNext`/`CanGoPrevious`. Play/Pause requires `CanPause` per
+  the method contract, plus `CanPlay` when paused or stopped. Invalid
+  playback status or failed property reads prevent dispatch. Stop has
+  no additional capability property.
+- Pre-dispatch work has a two-second overall timeout, and the transport
+  method reply has a separate two-second timeout. Outcomes distinguish
+  acknowledgement, skip, failure before sending, player-reported errors,
+  and uncertain execution after a missing reply. No automatic retries.
+- Checks and command execution cannot be atomic across processes. The
+  player may change state after a check. A successful reply is reported
+  as acknowledgement, not proof that playback changed.
+- `--interactive` enables `play-pause`, `stop`, `previous`, and `next`,
+  one per stdin line. With no flag, the prototype remains observation-only.
+- The main event loop continues discovery and input handling while one
+  dispatch task runs. Commands are serialized, with at most 32 waiting
+  requests retaining their original targets. Excess requests are dropped
+  with a diagnostic. Unavailable/unselected inputs are dropped immediately.
+- A bounded channel and detached standard input thread avoid blocking
+  Tokio shutdown on idle stdin. SIGINT is registered before announcing
+  readiness. EOF drains pending commands; Ctrl+C exits immediately and
+  warns if a command is in flight. No hardware keys are captured.
+
+### Verification
+
+- All 34 tests passed: 12 library unit tests, four CLI parser tests,
+  eight discovery/selection integration tests, and ten routing integration
+  tests in `tests/routing.rs`.
+- Cargo build, Clippy with warnings denied, formatting, and whitespace
+  checks passed. RustRover's build also succeeded; its inspections reported
+  no errors or warnings in the changed routing, CLI, main, and module files
+  or the new routing integration tests.
+- Private-bus recording players verify all four methods, isolation of
+  other players, changing capabilities without notifications, playback
+  state checks, missing selection, invalid properties, owner changes,
+  selection changes during preflight, timeouts, explicit method errors,
+  and no automatic retries.
+- Executable tests verify input order, dropping unavailable inputs,
+  application return, discovery/input responsiveness during an in-flight
+  check, EOF, Ctrl+C with idle stdin, and observation-only mode.
+- Automated playback commands were sent only to private test players.
+  A live desktop playback check was not performed.
+
+Continuous property tracking, daemon API, hardware input, tray UI, and disk
+persistence remain future work. Milestone 5 awaits user approval.
 
 ## License decision — 2026-09-26
 
@@ -1038,7 +1117,7 @@ the original license text and should remain unchanged.
 ## Development workflow
 
 - Proceed incrementally, with user approval before each new milestone.
-  Milestones 1 through 3 are complete. Milestone 4 is awaiting approval.
+  Milestones 1 through 4 are complete. Milestone 5 awaits user approval.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.
