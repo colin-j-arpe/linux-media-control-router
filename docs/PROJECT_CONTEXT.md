@@ -800,8 +800,10 @@ Use native Rust/D-Bus/X11 APIs for production functionality.
 
 # Immediate Development Task
 
-Milestone 1 is complete. After user approval for Milestone 2, begin with
-the MPRIS discovery component.
+Milestones 1 and 2 are complete. Obtain user approval before beginning
+Milestone 3, persistent logical application selection. Define fallback
+identity rules for players without `DesktopEntry` and resolution rules
+for multiple instances before implementing persistent selection.
 
 Before adding dependencies, verify current Rust crate choices and
 versions rather than relying on old examples.
@@ -846,6 +848,93 @@ version is not a minimum supported Rust version commitment. Check current
 crate versions and their compiler requirements before adding dependencies
 in Milestone 2.
 
+## Milestone 2 completed — 2026-09-26
+
+The original installed toolchain was Rust/Cargo 1.82.0. Published `zbus`
+documentation identifies version 5.19.0, whose manifest requires Rust
+1.87 and uses Rust edition 2024:
+`https://docs.rs/crate/zbus/5.19.0/source/Cargo.toml`.
+
+The original compiler cannot build that release. The user approved a
+toolchain upgrade. Rust 1.98.1, identified by the official stable channel
+manifest, was installed alongside the existing toolchain. The repository's
+`rust-toolchain.toml` selects 1.98.1 with rustfmt and Clippy; the global
+default toolchain was left unchanged.
+
+Verified `rustc`, Cargo, rustfmt, and Clippy versions, then successfully
+ran `cargo build --locked --offline`, `cargo run --locked --offline`, and
+`cargo fmt --check` with the new toolchain. Rustup reported an error during
+its subsequent self-update step, after installing the toolchain; the
+installed tools and project build were independently verified to work.
+
+The user approved Rust edition 2024. Ran `cargo fix --edition` with the
+new toolchain, changed `Cargo.toml` to edition 2024, and verified the build
+and formatting. The skeleton required no source changes.
+
+### Approved implementation choices
+
+- Use `zbus` with Tokio for asynchronous discovery, timeouts, and retries.
+- Preserve missing `DesktopEntry` as `None`. Display the service name as
+  a diagnostic label without assigning it persistent identity semantics;
+  fallback identity rules remain a Milestone 3 decision.
+- Direct dependencies, verified before addition and resolved in the
+  lockfile: `zbus 5.19.0`, `tokio 1.53.1`, and `futures-util 0.3.34`.
+  Tokio uses the current-thread runtime; zbus's default runtime features
+  are disabled in favor of its Tokio integration.
+
+### Implemented behavior and structure
+
+- `src/player/mod.rs`: desktop-independent player snapshots, an optional
+  desktop-entry identifier, playback status, and capabilities. Distinct
+  service instances remain distinct even if they share `DesktopEntry`.
+- `src/player/mpris.rs`: native D-Bus property queries at the standard
+  MPRIS object path, strict property type validation, and `CanControl`
+  eligibility. No `CanStop` property is assumed.
+- `src/player/discovery.rs`: subscribe to `NameOwnerChanged` before
+  enumerating existing services, then reconcile additions, removals,
+  and owner replacements. No periodic discovery polling is used.
+- Validation queries target unique owners. Generation numbers, task
+  cancellation, and an owner check before admission prevent obsolete
+  validation results from being accepted after an ownership change.
+- Startup validation permits five attempts with a two-second limit per
+  attempt and delays of 100, 250, 500, and 1000 milliseconds between
+  attempts. A fully unresponsive service can therefore take about twelve
+  seconds to reject. Other player validations continue concurrently.
+- An explicitly uncontrollable player is skipped without retries.
+  Exhausted failures are reported once and retried when ownership changes
+  or the prototype restarts, not indefinitely in the background.
+- `src/main.rs`: diagnostic added/removed/skipped events, a two-second
+  D-Bus method timeout, and Ctrl+C shutdown. Bus loss ends discovery with
+  an error; automatic reconnection is not implemented.
+
+### Verification
+
+- Final checks passed: `cargo test --locked --offline` (all nine tests),
+  `cargo clippy --all-targets --locked --offline -- -D warnings`,
+  `cargo fmt --check`, and `git diff --check`.
+- Three unit tests cover missing/empty desktop entries, malformed property
+  types, missing capabilities/identity, and invalid playback status.
+- Six integration tests use private D-Bus daemons to cover existing
+  instances, shared desktop-entry values, unrelated names, missing desktop
+  entries, delayed initialization, departure/return, phantom services,
+  uncontrollable players, slow validation, owner replacement, and bus loss.
+- A read-only desktop-session run discovered Spotify, reporting its
+  `spotify` desktop entry, identity, paused status, and capabilities. The
+  process exited successfully on SIGINT. No playback commands were sent.
+- Integration tests require socket creation outside the restricted
+  sandbox. `dbus-daemon` is a test dependency, not an application runtime
+  subprocess dependency.
+
+### Scope remaining
+
+The prototype takes property snapshots at admission. Continuous
+`PropertiesChanged` tracking, including partial updates and invalidated
+properties, still needs implementation before relying on live capability
+or playback state for routing/UI. Metadata tracking is also deferred.
+Persistent selection, command routing, key capture, the daemon control
+API, and tray UI remain unimplemented. The existing settled requirements
+for those layers remain unchanged.
+
 ## License decision — 2026-09-26
 
 The user selected Apache License 2.0 for the project. The full, unmodified
@@ -861,7 +950,7 @@ the original license text and should remain unchanged.
 ## Development workflow
 
 - Proceed incrementally, with user approval before each new milestone.
-  Milestone 1 was explicitly authorized; Milestone 2 is awaiting approval.
+  Milestones 1 and 2 are complete. Milestone 3 is awaiting approval.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.
