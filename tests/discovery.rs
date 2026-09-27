@@ -573,11 +573,11 @@ async fn cli_retains_desktop_and_fallback_selections_across_instance_lifecycles(
 fn cli_help_and_argument_errors_do_not_require_a_session_bus() {
     for (arguments, exit_code, expected) in [
         (vec!["--help"], 0, "--select-identity"),
-        (vec!["--select"], 2, "expected no arguments"),
+        (vec!["--select"], 2, "expected"),
         (
             vec!["--select", "a", "--select-identity", "b"],
             2,
-            "expected no arguments",
+            "expected",
         ),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_media-router"))

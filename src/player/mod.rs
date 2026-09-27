@@ -1,5 +1,6 @@
 pub mod discovery;
 mod mpris;
+pub mod routing;
 pub mod selection;
 
 /// One validated, running MPRIS instance. This is not a persistent selection.

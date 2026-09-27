@@ -2,23 +2,30 @@ use std::ffi::OsString;
 
 use media_router::player::selection::ApplicationId;
 
-pub const HELP: &str = "Usage: media-router [--select DESKTOP_ENTRY | --select-identity IDENTITY]
+pub const HELP: &str =
+    "Usage: media-router [--select DESKTOP_ENTRY | --select-identity IDENTITY] [--interactive]
 
 Watch MPRIS players and report the selected application's availability.
 
   --select DESKTOP_ENTRY    Select by DesktopEntry (for example: spotify).
   --select-identity NAME   Select by exact Identity when DesktopEntry is absent.
+  --interactive            Accept transport commands from standard input.
   -h, --help               Show this help.
 
 With no selection argument, players are displayed without selecting one.
 Quote Identity values containing spaces. Matching is exact and case-sensitive.
 Selection is retained while this process runs, including when a player exits
 and returns. It is not saved across router restarts. Press Ctrl+C to stop.
-This command does not send playback commands or capture media keys.";
+Interactive commands: play-pause, stop, previous, next (one per line).
+Without --interactive this command only observes players. No media keys are
+captured. End input to exit after pending commands finish, or press Ctrl+C.";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
-    Watch(Option<ApplicationId>),
+    Watch {
+        selected: Option<ApplicationId>,
+        interactive: bool,
+    },
     Help,
 }
 
@@ -31,25 +38,39 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, S
                 .map_err(|_| "arguments must be valid UTF-8".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    match arguments.as_slice() {
-        [] => Ok(Command::Watch(None)),
-        [option] if option == "--help" || option == "-h" => Ok(Command::Help),
-        [option, value] if option == "--select" => {
-            if value.is_empty() {
-                return Err("--select requires a nonempty DesktopEntry".into());
-            }
-            Ok(Command::Watch(Some(ApplicationId::DesktopEntry(
-                value.clone(),
-            ))))
-        }
-        [option, value] if option == "--select-identity" => {
-            Ok(Command::Watch(Some(ApplicationId::Identity(value.clone()))))
-        }
-        _ => Err(
-            "expected no arguments, --help, --select DESKTOP_ENTRY, or --select-identity IDENTITY"
-                .into(),
-        ),
+    if arguments.len() == 1 && matches!(arguments[0].as_str(), "--help" | "-h") {
+        return Ok(Command::Help);
     }
+    let mut selected = None;
+    let mut interactive = false;
+    let mut arguments = arguments.into_iter();
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--interactive" if !interactive => interactive = true,
+            "--select" | "--select-identity" if selected.is_none() => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| format!("expected a value after {option}"))?;
+                if option == "--select" {
+                    if value.is_empty() {
+                        return Err("--select requires a nonempty DesktopEntry".into());
+                    }
+                    selected = Some(ApplicationId::DesktopEntry(value));
+                } else {
+                    selected = Some(ApplicationId::Identity(value));
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "expected a single selection option and optional --interactive; unexpected argument {option:?}"
+                ));
+            }
+        }
+    }
+    Ok(Command::Watch {
+        selected,
+        interactive,
+    })
 }
 
 #[cfg(test)]
@@ -62,15 +83,27 @@ mod tests {
 
     #[test]
     fn distinguishes_selection_namespaces_and_preserves_exact_identity() {
-        assert_eq!(args(&[]).unwrap(), Command::Watch(None));
+        assert_eq!(
+            args(&[]).unwrap(),
+            Command::Watch {
+                selected: None,
+                interactive: false
+            }
+        );
         assert_eq!(
             args(&["--select", "spotify"]).unwrap(),
-            Command::Watch(Some(ApplicationId::DesktopEntry("spotify".into())))
+            Command::Watch {
+                selected: Some(ApplicationId::DesktopEntry("spotify".into())),
+                interactive: false
+            }
         );
         for identity in ["Spotify", "Player With Spaces", " Lecteur 音楽 ", ""] {
             assert_eq!(
                 args(&["--select-identity", identity]).unwrap(),
-                Command::Watch(Some(ApplicationId::Identity(identity.into())))
+                Command::Watch {
+                    selected: Some(ApplicationId::Identity(identity.into())),
+                    interactive: false
+                }
             );
         }
         assert_eq!(args(&["--help"]).unwrap(), Command::Help);
@@ -87,9 +120,33 @@ mod tests {
             vec!["spotify"],
             vec!["--select", "spotify", "--select-identity", "Spotify"],
             vec!["--select", "spotify", "--select", "firefox"],
+            vec!["--interactive", "--interactive"],
         ] {
             assert!(args(&arguments).is_err(), "accepted {arguments:?}");
         }
+    }
+
+    #[test]
+    fn interactive_is_opt_in_and_can_precede_or_follow_selection() {
+        let expected = Command::Watch {
+            selected: Some(ApplicationId::DesktopEntry("spotify".into())),
+            interactive: true,
+        };
+        assert_eq!(
+            args(&["--select", "spotify", "--interactive"]).unwrap(),
+            expected
+        );
+        assert_eq!(
+            args(&["--interactive", "--select", "spotify"]).unwrap(),
+            expected
+        );
+        assert_eq!(
+            args(&["--interactive"]).unwrap(),
+            Command::Watch {
+                selected: None,
+                interactive: true
+            }
+        );
     }
 
     #[cfg(unix)]
