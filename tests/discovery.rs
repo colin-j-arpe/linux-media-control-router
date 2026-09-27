@@ -403,3 +403,194 @@ async fn loss_of_bus_ends_discovery_with_an_error() {
         .unwrap();
     assert!(result.is_err());
 }
+
+struct Cli {
+    child: Child,
+    lines: mpsc::UnboundedReceiver<String>,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Cli {
+    fn start(bus: &PrivateBus, arguments: &[&str]) -> Self {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_media-router"))
+            .args(arguments)
+            .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = child.stdout.take().unwrap();
+        let (sender, lines) = mpsc::unbounded_channel();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(output).lines() {
+                let Ok(line) = line else { break };
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            child,
+            lines,
+            reader: Some(reader),
+        }
+    }
+
+    async fn line(&mut self) -> String {
+        timeout(Duration::from_secs(3), self.lines.recv())
+            .await
+            .expect("CLI output timed out")
+            .expect("CLI exited unexpectedly")
+    }
+
+    async fn next_selection(&mut self) -> Vec<String> {
+        loop {
+            let header = self.line().await;
+            match header.as_str() {
+                "SELECTION NONE" => return vec![header],
+                "SELECTION UNAVAILABLE" => return vec![header, self.line().await],
+                "SELECTION AVAILABLE" => {
+                    return vec![
+                        header,
+                        self.line().await,
+                        self.line().await,
+                        self.line().await,
+                    ];
+                }
+                _ => {}
+            }
+        }
+    }
+
+    async fn observe_player_without_selection_change(&mut self, service: &str) {
+        loop {
+            let line = self.line().await;
+            assert!(
+                !line.starts_with("SELECTION "),
+                "unexpected selection change: {line}"
+            );
+            if line == format!("  service: {service}") {
+                return;
+            }
+        }
+    }
+}
+
+impl Drop for Cli {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = self.reader.take().unwrap().join();
+    }
+}
+
+async fn selected_player(bus: &PrivateBus, name: &str, fallback: bool) -> Connection {
+    let connection = bus.connect().await;
+    if fallback {
+        connection
+            .object_server()
+            .at(PATH, RootWithoutDesktop)
+            .await
+            .unwrap();
+    } else {
+        connection.object_server().at(PATH, Root).await.unwrap();
+    }
+    connection
+        .object_server()
+        .at(PATH, MockPlayer::default())
+        .await
+        .unwrap();
+    connection.request_name(name).await.unwrap();
+    connection
+}
+
+#[tokio::test]
+async fn cli_retains_desktop_and_fallback_selections_across_instance_lifecycles() {
+    for fallback in [false, true] {
+        let bus = PrivateBus::start();
+        let other_name = "org.mpris.MediaPlayer2.other";
+        let _other = selected_player(&bus, other_name, !fallback).await;
+        let (arguments, label) = if fallback {
+            (
+                ["--select-identity", "Anonymous Player"],
+                "identity \"Anonymous Player\"",
+            )
+        } else {
+            (["--select", "test-player"], "desktop-entry \"test-player\"")
+        };
+        let mut cli = Cli::start(&bus, &arguments);
+        let unavailable = vec![
+            "SELECTION UNAVAILABLE".to_owned(),
+            format!("  application: {label}"),
+        ];
+        assert_eq!(cli.next_selection().await, unavailable);
+        cli.observe_player_without_selection_change(other_name)
+            .await;
+
+        let first_name = "org.mpris.MediaPlayer2.z";
+        let first = selected_player(&bus, first_name, fallback).await;
+        let available = |name: &str, connection: &Connection| {
+            vec![
+                "SELECTION AVAILABLE".to_owned(),
+                format!("  application: {label}"),
+                format!("  service: {name}"),
+                format!("  owner: {}", connection.unique_name().unwrap()),
+            ]
+        };
+        assert_eq!(cli.next_selection().await, available(first_name, &first));
+
+        let second_name = "org.mpris.MediaPlayer2.a";
+        let second = selected_player(&bus, second_name, fallback).await;
+        cli.observe_player_without_selection_change(second_name)
+            .await;
+        let third_name = "org.mpris.MediaPlayer2.b";
+        let third = selected_player(&bus, third_name, fallback).await;
+        cli.observe_player_without_selection_change(third_name)
+            .await;
+
+        first.release_name(first_name).await.unwrap();
+        assert_eq!(cli.next_selection().await, available(second_name, &second));
+        second.release_name(second_name).await.unwrap();
+        assert_eq!(cli.next_selection().await, available(third_name, &third));
+        third.release_name(third_name).await.unwrap();
+        assert_eq!(cli.next_selection().await, unavailable);
+
+        let returned_name = "org.mpris.MediaPlayer2.returned";
+        let returned = selected_player(&bus, returned_name, fallback).await;
+        assert_eq!(
+            cli.next_selection().await,
+            available(returned_name, &returned)
+        );
+        drop(cli);
+        let mut restarted = Cli::start(&bus, &[]);
+        assert_eq!(restarted.next_selection().await, vec!["SELECTION NONE"]);
+        restarted
+            .observe_player_without_selection_change(returned_name)
+            .await;
+    }
+}
+
+#[test]
+fn cli_help_and_argument_errors_do_not_require_a_session_bus() {
+    for (arguments, exit_code, expected) in [
+        (vec!["--help"], 0, "--select-identity"),
+        (vec!["--select"], 2, "expected no arguments"),
+        (
+            vec!["--select", "a", "--select-identity", "b"],
+            2,
+            "expected no arguments",
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_media-router"))
+            .args(arguments)
+            .env("DBUS_SESSION_BUS_ADDRESS", "invalid:")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(exit_code));
+        let text = if exit_code == 0 {
+            output.stdout
+        } else {
+            output.stderr
+        };
+        assert!(String::from_utf8(text).unwrap().contains(expected));
+    }
+}
