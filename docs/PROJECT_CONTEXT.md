@@ -815,8 +815,9 @@ Use native Rust/D-Bus/X11 APIs for production functionality.
 
 # Immediate Development Task
 
-Milestone 5 implementation and automated verification are complete. Review
-and a physical-key check in the user's Cinnamon session remain pending.
+Milestones 1 through 5 are complete. The user confirmed a successful
+physical-key test through the CLI and that all changes were committed and
+merged into `main`.
 Obtain user approval before Milestone 6 (the daemon D-Bus API). Capture is
 opt-in, and recovery is available on capture startup or through
 `--restore-bindings`. Routing refreshes relevant capabilities at dispatch
@@ -1103,12 +1104,12 @@ cause a command to be delivered to another application.
 Continuous property tracking, daemon API, hardware input, tray UI, and disk
 persistence remain future work at the completion of Milestone 4.
 
-## Milestone 5 implementation completed — 2026-09-29
+## Milestone 5 completed — 2026-09-29
 
 The user authorized this milestone on branch `feature/5-read-input`.
 The working tree was clean at the start. Initial investigation confirmed
 the installed Cinnamon schema's five transport keys and GIO 2.80.0
-development metadata. No desktop settings have been changed.
+development metadata. Initial investigation did not change desktop settings.
 
 ### Approved decisions and implementation
 
@@ -1142,8 +1143,9 @@ development metadata. No desktop settings have been changed.
 
 The user approved all three recommendations: opt-in capture, recovery on
 next capture startup or by a manual command, and preservation of custom
-Cinnamon shortcuts. Implementation and isolated verification are complete;
-review and a physical-key check in the user's Cinnamon session are pending.
+Cinnamon shortcuts. Implementation, isolated verification, and the
+user-reported physical-key test are complete. The user committed all changes
+and merged them into `main`.
 Selection persistence remains Milestone 7; the journal stores only the
 information needed to undo this backend's settings changes.
 
@@ -1175,10 +1177,10 @@ information needed to undo this backend's settings changes.
   `serde 1.0.229`, and `serde_json 1.0.151`. Tokio's `net` feature supplies
   readiness integration. X11 XTEST is enabled only for tests.
 - Tests use fake settings, a native GIO memory backend, and private Xvfb,
-  keyfile settings, and D-Bus instances. No live desktop settings or
-  playback commands have been used for verification.
+  keyfile settings, and D-Bus instances. Automated verification did not
+  change live desktop settings or send commands to live media players.
 
-### Verification and remaining manual check
+### Verification
 
 - All 46 tests passed: 19 library unit tests, five CLI parser tests, eight
   discovery integration tests, four input integration tests, and ten routing
@@ -1199,11 +1201,9 @@ information needed to undo this backend's settings changes.
   transport mapping changed. The backend compares mappings before deciding
   to stop. The test harness retains unmatched stdout/stderr messages because
   their delivery order is not guaranteed.
-- The remaining manual check is to run `--select spotify --capture` (or
-  another selected application), wait for readiness and availability,
-  exercise the physical transport keys, confirm volume/mute and custom
-  shortcuts retain their behavior, and verify restoration after Ctrl+C.
-  This has not been performed on the user's live desktop.
+- The user confirmed that the physical-key test through the CLI was
+  successful and that all changes were committed and merged into `main`.
+  This completes the outstanding manual validation for this milestone.
 - Immediate crash recovery, automatic startup, and selection storage remain
   outside this implementation. A crash may leave transport bindings released
   until the next capture startup or manual recovery, as explicitly approved.
@@ -1223,9 +1223,8 @@ the original license text and should remain unchanged.
 ## Development workflow
 
 - Proceed incrementally, with user approval before each new milestone.
-  Milestones 1 through 4 are complete. Milestone 5 implementation and
-  automated verification are complete; review and a physical-key check
-  remain pending. Milestone 6 has not been authorized.
+  Milestones 1 through 5 are complete, including the user-confirmed
+  physical-key test. Milestone 6 has not been authorized.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.
