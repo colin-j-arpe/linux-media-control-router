@@ -6,5 +6,12 @@ license = "Apache-2.0"
 
 [dependencies]
 futures-util = { version = "0.3.34", default-features = false, features = ["std", "async-await"] }
-tokio = { version = "1.53.1", features = ["macros", "rt", "signal", "sync", "time"] }
+gio = "0.22"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["macros", "net", "rt", "signal", "sync", "time"] }
+x11rb = { version = "0.14.0", features = ["xkb"] }
 zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
+
+[dev-dependencies]
+x11rb = { version = "0.14.0", features = ["xtest"] }
