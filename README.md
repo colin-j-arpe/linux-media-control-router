@@ -7,7 +7,10 @@ The initial target is Linux Mint Cinnamon on X11.
 ## Building from source
 
 Install Rust using rustup. The repository's `rust-toolchain.toml` selects
-Rust 1.98.1 with rustfmt and Clippy.
+Rust 1.98.1 with rustfmt and Clippy. Building also requires a C toolchain,
+`pkg-config`, and GLib/GIO development files (`build-essential`, `pkg-config`,
+and `libglib2.0-dev` on Linux Mint). Running capture requires Cinnamon’s
+media-key settings schema and an X11 session.
 
 From the repository root:
 
@@ -70,7 +73,8 @@ The selection never switches to a different application because one closes.
 Selection lasts for the current router process and is not saved to disk.
 Restart the command with another selection argument to change it, or with
 no argument to observe players without selecting one. Selection currently
-reports availability; add `--interactive` to send transport commands.
+reports availability; add `--interactive` to send terminal commands or
+`--capture` to route hardware transport keys.
 Use `--help` for usage.
 
 ## Sending transport commands
@@ -114,8 +118,66 @@ method is automatically retried. Close standard input (Ctrl+D in a terminal)
 to finish pending commands and exit, or press Ctrl+C to exit immediately.
 An in-flight command may already have executed when interrupted.
 
-The application does not capture hardware keys or change desktop keybindings.
-Volume and mute are outside its transport command set.
+Without `--capture`, terminal commands do not change desktop keybindings.
+Volume and mute are outside the transport command set.
+
+## Capturing hardware transport keys
+
+Run inside your Cinnamon X11 desktop session:
+
+```sh
+cargo run --locked -- --select spotify --capture
+```
+
+Wait for `CAPTURE READY` and `SELECTION AVAILABLE`, then use your media
+keys. Play and Pause keys both toggle play/pause. Stop, Previous, and Next
+route to the selected application. Holding a key sends one command per
+press. Caps Lock, Num Lock, and Scroll Lock do not prevent capture.
+Volume and mute remain under desktop control.
+
+Capture temporarily removes only the five plain `XF86Audio*` transport
+shortcuts from their corresponding Cinnamon settings. Custom shortcuts
+remain active in Cinnamon and follow **Cinnamon’s player choice**, which
+may differ from Media Router’s selection. Modified transport shortcuts
+(such as Ctrl+Play) are not captured.
+
+No selected/available application means transport inputs are discarded.
+`--interactive` can be combined with `--capture`; closing terminal input
+then leaves hardware capture running. Ctrl+C or SIGTERM stops capture and
+restores the prior settings. Only one capture/recovery process may run
+against the same state directory.
+
+If another application holds the required keys, startup fails and rolls
+back the changes. Capture also stops and restores bindings if the relevant
+keyboard mappings change, the X connection fails, or a binding changed by
+the router is edited externally. Restart after a keyboard mapping change.
+External edits are preserved during restoration, with a diagnostic.
+
+### Recovering after a crash
+
+The router saves its recovery journal **before** changing Cinnamon settings.
+After a crash, SIGKILL, or power loss, those settings can remain changed,
+even across logout. Recovery runs before the next capture session, or run:
+
+```sh
+cargo run --locked -- --restore-bindings
+```
+
+Recovery does not require an X connection or a selected player. Run it as
+the same user, with the same settings backend and state directory. Run it
+before uninstalling if capture did not shut down normally.
+
+The journal is `$XDG_STATE_HOME/media-router/bindings.json`, or
+`~/.local/state/media-router/bindings.json` when `XDG_STATE_HOME` is unset
+or relative. Do not delete an outstanding journal: it contains the original
+shortcut settings. Failed restoration retains it for another attempt.
+When external edits are preserved, the original backup is retained as
+`bindings-conflict-*.json` for inspection, not automatically replayed.
+
+Restoration preserves explicit settings and inherited defaults. Detecting
+external edits is best effort: comparison and writing are not atomic, and
+an edit identical to the router’s temporary value is indistinguishable.
+There is no watchdog for immediate crash recovery.
 
 ## Contributing
 
@@ -130,9 +192,10 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo fmt --check
 ```
 
-Integration tests require `dbus-daemon` and permission to create local
-Unix sockets. They start isolated session buses and do not use your
-desktop session bus. Unit tests alone can be run with `cargo test --lib
+Integration tests require `dbus-daemon`, `Xvfb` (`xvfb` on Linux Mint),
+the Cinnamon media-key settings schema, and permission to create local
+Unix sockets. They use private session buses, X servers, and settings
+files; they do not send input to your desktop or change its keybindings. Unit tests alone can be run with `cargo test --lib
 --locked` in environments that cannot create sockets.
 
 ## License

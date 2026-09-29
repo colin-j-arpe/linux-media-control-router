@@ -24,8 +24,19 @@ async fn main() -> ExitCode {
         Ok(cli::Command::Watch {
             selected,
             interactive,
-        }) => match watch(selected, interactive).await {
+            capture,
+        }) => match watch(selected, interactive, capture).await {
             Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("media-router: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        Ok(cli::Command::RestoreBindings) => match media_router::input::restore_bindings() {
+            Ok(()) => {
+                println!("Binding recovery complete.");
+                ExitCode::SUCCESS
+            }
             Err(error) => {
                 eprintln!("media-router: {error}");
                 ExitCode::FAILURE
@@ -41,13 +52,27 @@ async fn main() -> ExitCode {
 async fn watch(
     selected: Option<ApplicationId>,
     interactive: bool,
+    capture_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Register before announcing readiness, including when stdin is idle.
     let mut interrupts = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let mut terminations =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let connection = zbus::connection::Builder::session()?
         .method_timeout(std::time::Duration::from_secs(2))
         .build()
         .await?;
+
+    let mut capture = if capture_enabled {
+        Some(media_router::input::Capture::start().await?)
+    } else {
+        None
+    };
+    if capture_enabled {
+        eprintln!(
+            "CAPTURE READY: hardware transport keys acquired; Ctrl+C restores Cinnamon bindings."
+        );
+    }
 
     eprintln!("Watching MPRIS players on the session bus. Press Ctrl+C to stop.");
     eprintln!("Status and capabilities are snapshots taken when a player is discovered.");
@@ -67,70 +92,91 @@ async fn watch(
     if interactive {
         eprintln!("Enter play-pause, stop, previous, or next; one command per line.");
     }
-    loop {
-        if commands.is_empty()
-            && let Some((action, target)) = pending.pop_front()
-        {
-            let connection = connection.clone();
-            let current = state_receiver.clone();
-            commands.spawn(async move {
-                let outcome = routing::dispatch(&connection, &current, &target, action).await;
-                (action, outcome)
-            });
-        }
-        if interactive && !input_open && pending.is_empty() && commands.is_empty() {
-            break;
-        }
-        tokio::select! {
-            biased;
-            _ = interrupts.recv() => {
-                if !commands.is_empty() {
-                    eprintln!("Exiting with a command in flight; it may already have executed. No retry will be attempted.");
-                }
+    let result = async {
+        loop {
+            if commands.is_empty()
+                && let Some((action, target)) = pending.pop_front()
+            {
+                let connection = connection.clone();
+                let current = state_receiver.clone();
+                commands.spawn(async move {
+                    let outcome = routing::dispatch(&connection, &current, &target, action).await;
+                    (action, outcome)
+                });
+            }
+            if interactive && !capture_enabled && !input_open && pending.is_empty() && commands.is_empty() {
                 break;
             }
-            result = &mut discovery => { result?; break; }
-            Some(event) = events.recv() => {
-                print_event(&event);
-                if let Some(state) = selection.apply_event(&event) {
-                    state_sender.send_replace(state.clone());
-                    print_selection(state);
-                }
-            }
-            result = commands.join_next(), if !commands.is_empty() => {
-                let (action, outcome) = result.expect("nonempty command set")?;
-                print_outcome(action, outcome);
-            }
-            line = input.recv(), if input_open => {
-                match line {
-                    None => input_open = false,
-                    Some(Err(error)) => {
-                        eprintln!("Input error: {error}");
-                        input_open = false;
+            tokio::select! {
+                biased;
+                _ = interrupts.recv() => {
+                    if !commands.is_empty() {
+                        eprintln!("Exiting with a command in flight; it may already have executed. No retry will be attempted.");
                     }
-                    Some(Ok(line)) => {
-                        let line = line.trim();
-                        if line.is_empty() { continue; }
-                        match line.parse::<TransportAction>() {
-                            Err(error) => eprintln!("COMMAND INVALID: {error}"),
-                            Ok(action) => match selection.state() {
-                                SelectionState::Unselected => print_outcome(action, RouteOutcome::Skipped(SkipReason::NoSelection)),
-                                SelectionState::Unavailable { .. } => print_outcome(action, RouteOutcome::Skipped(SkipReason::Unavailable)),
-                                target => {
-                                    if pending.len() < 32 {
-                                        pending.push_back((action, target));
-                                    } else {
-                                        eprintln!("COMMAND SKIPPED: {action}: command queue is full");
-                                    }
-                                }
+                    break;
+                }
+                _ = terminations.recv() => {
+                    if !commands.is_empty() { eprintln!("Exiting with a command in flight; it may already have executed."); }
+                    break;
+                }
+                result = &mut discovery => { result?; break; }
+                Some(event) = events.recv() => {
+                    print_event(&event);
+                    if let Some(state) = selection.apply_event(&event) {
+                        state_sender.send_replace(state.clone());
+                        print_selection(state);
+                    }
+                }
+                result = commands.join_next(), if !commands.is_empty() => {
+                    let (action, outcome) = result.expect("nonempty command set")?;
+                    print_outcome(action, outcome);
+                }
+                action = async { capture.as_mut().expect("capture enabled").next().await }, if capture_enabled => {
+                    enqueue(action?, selection.state(), &mut pending);
+                }
+                line = input.recv(), if input_open => {
+                    match line {
+                        None => input_open = false,
+                        Some(Err(error)) => {
+                            eprintln!("Input error: {error}");
+                            input_open = false;
+                        }
+                        Some(Ok(line)) => {
+                            let line = line.trim();
+                            if line.is_empty() { continue; }
+                            match line.parse::<TransportAction>() {
+                                Err(error) => eprintln!("COMMAND INVALID: {error}"),
+                                Ok(action) => enqueue(action, selection.state(), &mut pending),
                             }
                         }
                     }
                 }
             }
         }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }.await;
+    commands.abort_all();
+    if let Some(capture) = capture.as_mut() {
+        capture.stop()?;
     }
-    Ok(())
+    result
+}
+
+fn enqueue(
+    action: TransportAction,
+    target: SelectionState,
+    pending: &mut VecDeque<(TransportAction, SelectionState)>,
+) {
+    match target {
+        SelectionState::Unselected => {
+            print_outcome(action, RouteOutcome::Skipped(SkipReason::NoSelection))
+        }
+        SelectionState::Unavailable { .. } => {
+            print_outcome(action, RouteOutcome::Skipped(SkipReason::Unavailable))
+        }
+        target if pending.len() < 32 => pending.push_back((action, target)),
+        _ => eprintln!("COMMAND SKIPPED: {action}: command queue is full"),
+    }
 }
 
 fn terminal_input(enabled: bool) -> mpsc::Receiver<std::io::Result<String>> {

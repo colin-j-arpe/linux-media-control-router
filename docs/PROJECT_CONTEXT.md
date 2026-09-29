@@ -815,11 +815,12 @@ Use native Rust/D-Bus/X11 APIs for production functionality.
 
 # Immediate Development Task
 
-Milestones 1 through 4 are complete. Obtain user approval before beginning
-Milestone 5, the Cinnamon/X11 input backend. Design exact keybinding backup,
-restoration, and crash recovery before changing desktop bindings. Routing
-now refreshes relevant capabilities at dispatch time. Disk persistence
-across router restarts remains scheduled for Milestone 7.
+Milestone 5 implementation and automated verification are complete. Review
+and a physical-key check in the user's Cinnamon session remain pending.
+Obtain user approval before Milestone 6 (the daemon D-Bus API). Capture is
+opt-in, and recovery is available on capture startup or through
+`--restore-bindings`. Routing refreshes relevant capabilities at dispatch
+time. Selection persistence across router restarts remains Milestone 7.
 
 Before adding dependencies, verify current Rust crate choices and
 versions rather than relying on old examples.
@@ -1100,7 +1101,112 @@ cause a command to be delivered to another application.
   A live desktop playback check was not performed.
 
 Continuous property tracking, daemon API, hardware input, tray UI, and disk
-persistence remain future work. Milestone 5 awaits user approval.
+persistence remain future work at the completion of Milestone 4.
+
+## Milestone 5 implementation completed — 2026-09-29
+
+The user authorized this milestone on branch `feature/5-read-input`.
+The working tree was clean at the start. Initial investigation confirmed
+the installed Cinnamon schema's five transport keys and GIO 2.80.0
+development metadata. No desktop settings have been changed.
+
+### Approved decisions and implementation
+
+- Keep capture opt-in with `--capture`; preserve observation-only startup.
+  Feed normalized hardware actions into the existing routing queue.
+- Use native `x11rb` for X11 and `gio` for Cinnamon GSettings access.
+  Published documentation and compatible dependency versions were checked
+  before addition. No runtime `gsettings` subprocess is used.
+- Before any settings write, durably save a recovery journal in the user's
+  XDG state directory. Preserve exact arrays and whether each setting was
+  explicitly set or inherited. Use a process lock to prevent competing
+  router instances from modifying the same settings/recovery record.
+- Acquire only the five specified transport keys, normalize Play and Pause,
+  and leave volume/mute untouched. If acquisition fails, release partial
+  grabs and restore the settings this attempt changed.
+- On clean exit (including SIGINT/SIGTERM), release grabs and restore prior
+  settings only where the current value still matches the router's expected
+  temporary value. Preserve intervening user changes; report conflicts.
+  An identical user-written value cannot reliably be distinguished from
+  the router's own value, and settings comparison/write is not atomic.
+- Approved crash policy: recover an unfinished journal before the next
+  capture session, with a separate `--restore-bindings` recovery command.
+  This does not restore Cinnamon bindings immediately after SIGKILL or a
+  crash. A separate watchdog would be needed for prompt process-crash
+  recovery and is an alternative requiring a user decision.
+- Approved custom-shortcut policy: remove only the five plain XF86
+  transport accelerators from their corresponding arrays, leaving custom
+  shortcuts under Cinnamon control. Those custom shortcuts would therefore
+  retain Cinnamon's target-selection behavior, not the router's selection.
+  Routing custom accelerators too would require expanded input handling.
+
+The user approved all three recommendations: opt-in capture, recovery on
+next capture startup or by a manual command, and preservation of custom
+Cinnamon shortcuts. Implementation and isolated verification are complete;
+review and a physical-key check in the user's Cinnamon session are pending.
+Selection persistence remains Milestone 7; the journal stores only the
+information needed to undo this backend's settings changes.
+
+### Structure and implementation details
+
+- `src/input/settings.rs` implements native GSettings access and a settings
+  lease. A small settings trait supports deterministic failure tests.
+  The journal is written via a synced temporary file, atomic rename, and
+  directory sync before any settings changes. A held file lock excludes
+  competing capture/recovery processes using the same state directory.
+- Restoration is repeatable after partial failure. Errors retain the
+  journal. Externally changed values are preserved, with the original
+  journal archived as `bindings-conflict-*.json` for inspection.
+- `src/input/x11.rs` uses native X11 passive grabs, discovers keycodes from
+  the current map, accounts for lock modifiers, and uses XKB detectable
+  repeat to send one action per press. Tokio file-descriptor readiness
+  drives input. Keyboard notifications trigger a mapping comparison;
+  a relevant change stops capture rather than using obsolete keycodes.
+- `src/input/mod.rs` coordinates settings and X11 ownership. Startup allows
+  two seconds for Cinnamon to release grabs, with rollback on failure.
+  GLib notifications are serviced at least every 100 milliseconds while
+  idle. External edits to the settings the router changed stop capture.
+- Main integrates hardware and terminal input into the existing bounded
+  routing queue, handles SIGINT/SIGTERM, and explicitly restores settings
+  on exit. Drop provides fallback cleanup; it is not crash recovery.
+- `--restore-bindings` works without an X connection. Capture requires
+  the Cinnamon/X11 environment. Observation-only startup is unchanged.
+- New direct dependencies resolved to `gio 0.22.10`, `x11rb 0.14.0`,
+  `serde 1.0.229`, and `serde_json 1.0.151`. Tokio's `net` feature supplies
+  readiness integration. X11 XTEST is enabled only for tests.
+- Tests use fake settings, a native GIO memory backend, and private Xvfb,
+  keyfile settings, and D-Bus instances. No live desktop settings or
+  playback commands have been used for verification.
+
+### Verification and remaining manual check
+
+- All 46 tests passed: 19 library unit tests, five CLI parser tests, eight
+  discovery integration tests, four input integration tests, and ten routing
+  integration tests. Cargo Clippy with warnings denied, formatting, and
+  whitespace checks passed. RustRover's build succeeded and inspections
+  reported no errors or warnings in the new/changed Rust files checked.
+- Input integration tests drive actual XTEST key events through the binary
+  to a private recording MPRIS player. They verify all five keysyms/four
+  actions, held-key suppression with repeat enabled, lock modifiers,
+  unclaimed volume and modified transport grabs, unavailable-input drops,
+  SIGINT/SIGTERM restoration, SIGKILL recovery manually and on restart,
+  competing-process exclusion, grab-failure rollback, external edits, and
+  restoration after relevant keyboard mapping changes.
+- Settings unit tests cover exact arrays, explicit versus inherited values,
+  interrupted acquisition/restoration, malformed journals, and conflict
+  archival. Native GIO behavior is also exercised with a memory backend.
+- X11 testing showed that a new-keyboard notification need not mean the
+  transport mapping changed. The backend compares mappings before deciding
+  to stop. The test harness retains unmatched stdout/stderr messages because
+  their delivery order is not guaranteed.
+- The remaining manual check is to run `--select spotify --capture` (or
+  another selected application), wait for readiness and availability,
+  exercise the physical transport keys, confirm volume/mute and custom
+  shortcuts retain their behavior, and verify restoration after Ctrl+C.
+  This has not been performed on the user's live desktop.
+- Immediate crash recovery, automatic startup, and selection storage remain
+  outside this implementation. A crash may leave transport bindings released
+  until the next capture startup or manual recovery, as explicitly approved.
 
 ## License decision — 2026-09-26
 
@@ -1117,7 +1223,9 @@ the original license text and should remain unchanged.
 ## Development workflow
 
 - Proceed incrementally, with user approval before each new milestone.
-  Milestones 1 through 4 are complete. Milestone 5 awaits user approval.
+  Milestones 1 through 4 are complete. Milestone 5 implementation and
+  automated verification are complete; review and a physical-key check
+  remain pending. Milestone 6 has not been authorized.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.
