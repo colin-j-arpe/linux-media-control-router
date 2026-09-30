@@ -88,6 +88,14 @@ impl Selection {
         (before != after).then_some(after)
     }
 
+    /// Validated controllable instances, ordered by service name.
+    pub fn players(&self) -> impl Iterator<Item = (&ApplicationId, &Player)> {
+        self.players
+            .values()
+            .filter(|entry| entry.player.capabilities.can_control)
+            .map(|entry| (&entry.application, &entry.player))
+    }
+
     pub fn selected_application(&self) -> Option<&ApplicationId> {
         self.selected.as_ref()
     }

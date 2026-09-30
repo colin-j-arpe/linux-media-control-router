@@ -662,52 +662,22 @@ daemon.
 
 ------------------------------------------------------------------------
 
-# Proposed Daemon D-Bus API
+# Daemon D-Bus API
 
-The daemon should expose its own stable D-Bus API so the tray
-application is a thin client.
+Milestone 6 implements the versioned session-bus API documented in
+[DBUS_API.md](DBUS_API.md), with its machine-readable contract in
+[org.mediarouter.MediaRouter1.xml](org.mediarouter.MediaRouter1.xml).
 
-Conceptual operations:
+The bus name and interface are `org.mediarouter.MediaRouter1`; the object
+path is `/org/mediarouter/MediaRouter1`. `--serve` exposes the API explicitly.
+It provides `GetState`, `SelectApplication`, `ClearSelection`, and
+`SetCaptureEnabled`, with complete revisioned `StateChanged` signals.
 
-``` text
-ListApplications()
-GetSelectedApplication()
-SelectApplication(id)
-
-GetAutoSelect()
-SetAutoSelect(bool)
-
-GetAutoSelectBrowsers()
-SetAutoSelectBrowsers(bool)
-```
-
-Potential signals:
-
-``` text
-ApplicationsChanged
-SelectedApplicationChanged
-SelectedApplicationAvailabilityChanged
-SettingsChanged
-```
-
-Exact names/signatures are not yet frozen.
-
-The architecture should be:
-
-``` text
-Tray UI
-   ↕
-router's D-Bus API
-   ↕
-Rust daemon
-   ├── player manager
-   ├── selection manager
-   ├── MPRIS
-   └── input backend
-```
-
-This allows the tray UI implementation language to change without
-rewriting the daemon.
+The daemon owns discovery, selection, routing, and capture. A future tray
+client reads state and sends requests over D-Bus. Snapshot/revision storage
+is in RAM, without history; clients resynchronize when the owner changes.
+Auto-selection settings remain deferred to Milestone 7 with user-approved
+semantics still needed. There are no browser-tab controls in this API.
 
 ------------------------------------------------------------------------
 
@@ -818,8 +788,9 @@ Use native Rust/D-Bus/X11 APIs for production functionality.
 Milestones 1 through 5 are complete. The user confirmed a successful
 physical-key test through the CLI and that all changes were committed and
 merged into `main`.
-Obtain user approval before Milestone 6 (the daemon D-Bus API). Capture is
-opt-in, and recovery is available on capture startup or through
+Milestone 6 is complete; the user confirmed that CLI service commands
+function as expected. Obtain user approval before Milestone 7
+(persistence/startup). Capture is opt-in, and recovery is available on capture startup or through
 `--restore-bindings`. Routing refreshes relevant capabilities at dispatch
 time. Selection persistence across router restarts remains Milestone 7.
 
@@ -1208,6 +1179,115 @@ information needed to undo this backend's settings changes.
   outside this implementation. A crash may leave transport bindings released
   until the next capture startup or manual recovery, as explicitly approved.
 
+## Milestone 6 completed — 2026-09-30
+
+The user authorized the daemon D-Bus API on branch `feature/6-daemon-api`.
+The working tree was clean at the start. Existing selection, routing, and
+capture code was reviewed. The user approved all three recommendations
+(service lifecycle/naming, revisioned snapshots and runtime selection,
+and capture control with auto-selection deferred). The user also confirmed
+the in-memory snapshot/revision approach after discussing memory usage.
+No dependencies were added or upgraded.
+
+### Approved and implemented contract
+
+1. Service lifecycle and naming:
+   - Add explicit `--serve` to publish the API on the user session bus.
+     It can be combined with existing selection, capture, and interactive
+     flags. Closing stdin does not stop a serving daemon.
+   - Bus name and interface: `org.mediarouter.MediaRouter1`.
+     Object path: `/org/mediarouter/MediaRouter1`.
+   - Only one API server owns this name per session bus. A second server
+     fails without replacing or queuing behind the first, and before any
+     capture settings changes. Ordinary diagnostic runs remain possible.
+     Capture ownership remains protected by the existing settings lock.
+   - Reuse the installed zbus dependency. Version the public contract from
+     its first release and document its introspection XML and data types.
+
+2. State and selection:
+   - `GetState()` returns one coherent snapshot: revision, logical
+     applications, selected identity, availability, active instance, and
+     capture state/error information.
+   - Each application record contains identity kind, exact identity value,
+     display name, and running instance count. Group instances according
+     to the established selection rules. An absent selected application
+     remains in the separate selection record, not the running inventory.
+   - `SelectApplication(kind, value)` changes the selection at runtime,
+     including selection of an absent application. `ClearSelection()`
+     explicitly clears it. Desktop-entry and fallback Identity namespaces
+     remain distinct; an empty fallback identity is not a no-selection
+     marker. Reject unknown kinds and empty desktop-entry identifiers.
+   - `StateChanged(snapshot)` carries a complete snapshot with a monotonic
+     revision for this service instance. Clients subscribe before reading
+     initial state, ignore older revisions, and resynchronize when the
+     service owner changes. This replaces the earlier conceptual collection
+     of independent change signals with one consistent update.
+   - Do not expose discovery-time playback/capability snapshots as live
+     properties. Routing continues to refresh them when dispatching.
+
+3. Settings scope and capture control:
+   - `SetCaptureEnabled(bool)` enables/disables hardware capture at runtime
+     using the existing journal and restoration rules. Disabling preserves
+     application selection. Capture remains opt-in at startup.
+   - While serving, input-backend failure stops capture and reports a fault
+     through API state, while discovery and API access remain available.
+     Report restoration failures explicitly and preserve recovery data;
+     do not report clean disablement when restoration failed.
+   - Defer auto-selection settings and behavior to Milestone 7, where their
+     precedence and browser rules need approval. Do not expose setters for
+     unimplemented behavior. Selection and settings are not saved across
+     router restarts in Milestone 6.
+   - Keep transport-method invocation on the existing hardware/terminal
+     paths for this milestone; the new API controls selection and capture.
+
+### Implementation and verification
+
+The main event loop remains the single owner of mutable router state.
+D-Bus handlers send bounded requests to that loop and await replies;
+wire-format records remain separate from core selection types. Publish
+coherent snapshots after state changes. A successful selection reply means
+that the change has been applied, not merely queued. Existing routing
+checks still prevent pending commands from being redirected to replacements.
+
+- `src/dbus_api/mod.rs` defines typed D-Bus records, service methods,
+  errors, and snapshot publication using the existing zbus/Serde crates.
+  `Selection::players()` provides a read-only inventory iterator.
+- The main loop applies mutation requests from a bounded 32-entry queue;
+  replies contain the applied snapshot. GetState reads the latest snapshot
+  directly, including during capture startup. Invalid requests and repeated
+  unchanged values do not advance the revision.
+- A Tokio watch channel retains the current snapshot; the signal publisher
+  can coalesce intermediate revisions. No history is stored. Each daemon
+  starts its `u64` revision at zero; clients track the unique bus owner.
+- Capture states are disabled, starting, enabled, and faulted. While serving,
+  capture faults leave discovery and API access running. Restoration failures
+  are returned explicitly, retain recovery data, and can be retried.
+  Non-serving capture runs retain their existing exit-on-failure behavior.
+- `docs/DBUS_API.md` and the versioned interface XML document wire signatures,
+  identity/availability semantics, client synchronization, errors, recovery,
+  and optional diagnostic busctl examples. README contains user instructions.
+- All 50 tests passed: 19 library unit tests, six CLI parser tests, two API
+  integration tests, eight discovery integration tests, five input integration
+  tests, and ten routing integration tests. Private-bus API tests verify
+  introspection, signals/revisions, identity validation, grouping, sticky
+  selection, departure/return, multiple clients, exclusive name ownership,
+  stdin EOF, SIGTERM, and revision/selection reset after restart.
+- The isolated Xvfb/settings test verifies API-controlled enable/disable,
+  routing after runtime selection, unavailable-input drops, unchanged
+  selection on disable, restoration failure and retry, preserved external
+  edits, and continued API access after input-backend failure.
+- Cargo Clippy with warnings denied, formatting, and whitespace checks passed.
+  RustRover's build succeeded and inspections of the changed/new Rust files
+  reported no errors or warnings. No live desktop settings or playback were
+  used for automated verification.
+- The user confirmed that CLI service commands function as expected,
+  completing the manual service-command check for this milestone.
+
+D-Bus API Design Guidelines and the installed zbus 5.19.0 APIs informed the
+contract. Selection/preference disk storage, auto-selection policy, startup
+integration, and the tray UI remain future milestones. Milestone 7 has not
+been authorized.
+
 ## License decision — 2026-09-26
 
 The user selected Apache License 2.0 for the project. The full, unmodified
@@ -1223,8 +1303,9 @@ the original license text and should remain unchanged.
 ## Development workflow
 
 - Proceed incrementally, with user approval before each new milestone.
-  Milestones 1 through 5 are complete, including the user-confirmed
-  physical-key test. Milestone 6 has not been authorized.
+  Milestones 1 through 6 are complete, including the user-confirmed
+  physical-key and CLI service-command checks. Milestone 7 has not been
+  authorized.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.
