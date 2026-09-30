@@ -22,6 +22,53 @@ cargo fmt --check
 
 The debug executable is written to `target/debug/media-router`.
 
+## Short command-line options
+
+Long options remain supported. These short aliases are also available:
+
+| Long option | Short option |
+|---|---|
+| `--interactive` | `-i` |
+| `--capture` | `-c` |
+| `--serve` | `-s` |
+| `--select DESKTOP_ENTRY` | `-p DESKTOP_ENTRY` |
+| `--select-identity IDENTITY` | `-I IDENTITY` |
+| `--help` | `-h` |
+
+Options are case-sensitive: `-i` enables interactive input, while `-I`
+takes a fallback Identity. `--restore-bindings` remains long-only.
+
+Short flags can be grouped. These commands are equivalent:
+
+```sh
+media-router --interactive --capture --serve --select spotify
+media-router -ics -p spotify
+media-router -icsp spotify
+media-router -icspspotify
+```
+
+A value-taking short option consumes the remainder of its group as its
+value, or the next argument if the group ends there. Thus `-pics` selects
+the desktop entry `ics`; it does not enable interactive input, capture,
+or serving. Values containing spaces must be quoted:
+
+```sh
+media-router -cs -I "Example Player"
+media-router -csI"Example Player"
+```
+
+Pass option-like values beginning with `-` attached to the short option,
+for example `-I--help` selects the exact Identity `--help`. Empty fallback
+identities remain supported with `-I ""`; empty desktop-entry IDs are
+invalid. No abbreviation of long option names is inferred: use `--serve`,
+not `--server`.
+
+Unknown options, missing values, duplicate options (including mixed forms
+such as `-c --capture`), and multiple selection options are errors. Help
+and recovery must each be used alone, outside a group or other options.
+When running through Cargo, put app arguments after `--`, for example
+`cargo run --locked -- -ics -p spotify`.
+
 ## Discovering media applications
 
 Run `cargo run --locked` from a terminal in your Linux desktop session.
