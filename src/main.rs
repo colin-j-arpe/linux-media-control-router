@@ -7,6 +7,11 @@ use tokio::{
     task::JoinSet,
 };
 
+use media_router::{
+    dbus_api::{self, CaptureState, Operation, Server, State},
+    input::Capture,
+};
+
 use media_router::player::{
     Player,
     discovery::{self, DiscoveryEvent},
@@ -25,7 +30,8 @@ async fn main() -> ExitCode {
             selected,
             interactive,
             capture,
-        }) => match watch(selected, interactive, capture).await {
+            serve,
+        }) => match watch(selected, interactive, capture, serve).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("media-router: {error}");
@@ -53,6 +59,7 @@ async fn watch(
     selected: Option<ApplicationId>,
     interactive: bool,
     capture_enabled: bool,
+    serve: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Register before announcing readiness, including when stdin is idle.
     let mut interrupts = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
@@ -63,21 +70,34 @@ async fn watch(
         .build()
         .await?;
 
-    let mut capture = if capture_enabled {
-        Some(media_router::input::Capture::start().await?)
-    } else {
-        None
-    };
-    if capture_enabled {
-        eprintln!(
-            "CAPTURE READY: hardware transport keys acquired; Ctrl+C restores Cinnamon bindings."
-        );
-    }
-
-    eprintln!("Watching MPRIS players on the session bus. Press Ctrl+C to stop.");
-    eprintln!("Status and capabilities are snapshots taken when a player is discovered.");
     let mut selection = Selection::default();
     selection.select(selected);
+    let mut capture_state = CaptureState::default();
+    let mut capture = None;
+    let (mut server, mut requests) = if serve {
+        let (server, requests) =
+            Server::start(&connection, State::snapshot(&selection, &capture_state)).await?;
+        (Some(server), requests)
+    } else {
+        (None, mpsc::channel(1).1)
+    };
+    if capture_enabled {
+        capture_state.status = "starting".into();
+        publish(&server, &selection, &capture_state);
+        let result = change_capture(&mut capture, &mut capture_state, true).await;
+        publish(&server, &selection, &capture_state);
+        if let Err(error) = result {
+            if !serve {
+                return Err(error.into());
+            }
+            eprintln!("CAPTURE FAULT: {error}");
+        }
+    }
+    if serve {
+        eprintln!("API READY: {} {}", dbus_api::NAME, dbus_api::PATH);
+    }
+    eprintln!("Watching MPRIS players on the session bus. Press Ctrl+C to stop.");
+    eprintln!("Status and capabilities are snapshots taken when a player is discovered.");
     print_selection(selection.state());
     let (state_sender, state_receiver) = watch::channel(selection.state());
     let (event_sender, mut events) = mpsc::unbounded_channel();
@@ -104,7 +124,7 @@ async fn watch(
                     (action, outcome)
                 });
             }
-            if interactive && !capture_enabled && !input_open && pending.is_empty() && commands.is_empty() {
+            if interactive && !serve && capture.is_none() && !input_open && pending.is_empty() && commands.is_empty() {
                 break;
             }
             tokio::select! {
@@ -120,19 +140,58 @@ async fn watch(
                     break;
                 }
                 result = &mut discovery => { result?; break; }
+                result = async { server.as_mut().expect("serving").stopped().await }, if serve => {
+                    result?;
+                    return Err("D-Bus state publisher stopped".into());
+                }
+                Some(request) = requests.recv(), if serve => {
+                    if request.reply.is_closed() { continue; }
+                    let result = match request.operation {
+                        Operation::Select(application) => {
+                            selection.select(application);
+                            state_sender.send_replace(selection.state());
+                            print_selection(selection.state());
+                            Ok(())
+                        }
+                        Operation::Capture(enabled) => {
+                            if enabled && capture_state.status != "enabled" {
+                                capture_state.status = "starting".into();
+                                capture_state.error.clear();
+                                publish(&server, &selection, &capture_state);
+                            }
+                            change_capture(&mut capture, &mut capture_state, enabled).await
+                                .map_err(dbus_api::Error::CaptureFailed)
+                        }
+                    };
+                    let snapshot = publish(&server, &selection, &capture_state);
+                    let _ = request.reply.send(result.map(|()| snapshot));
+                }
                 Some(event) = events.recv() => {
                     print_event(&event);
                     if let Some(state) = selection.apply_event(&event) {
                         state_sender.send_replace(state.clone());
                         print_selection(state);
                     }
+                    publish(&server, &selection, &capture_state);
                 }
                 result = commands.join_next(), if !commands.is_empty() => {
                     let (action, outcome) = result.expect("nonempty command set")?;
                     print_outcome(action, outcome);
                 }
-                action = async { capture.as_mut().expect("capture enabled").next().await }, if capture_enabled => {
-                    enqueue(action?, selection.state(), &mut pending);
+                action = async { capture.as_mut().expect("capture enabled").next().await }, if capture_state.status == "enabled" => {
+                    match action {
+                        Ok(action) => enqueue(action, selection.state(), &mut pending),
+                        Err(error) => {
+                            let mut message = error.to_string();
+                            if let Err(cleanup) = change_capture(&mut capture, &mut capture_state, false).await {
+                                message.push_str(&format!("; restoration failed: {cleanup}"));
+                            }
+                            capture_state = CaptureState { status: "faulted".into(), error: message.clone() };
+                            publish(&server, &selection, &capture_state);
+                            if !serve { return Err(message.into()); }
+                            eprintln!("CAPTURE FAULT: {message}");
+                        }
+                    }
                 }
                 line = input.recv(), if input_open => {
                     match line {
@@ -158,6 +217,48 @@ async fn watch(
     commands.abort_all();
     if let Some(capture) = capture.as_mut() {
         capture.stop()?;
+    }
+    result
+}
+
+fn publish(server: &Option<Server>, selection: &Selection, capture: &CaptureState) -> State {
+    let snapshot = State::snapshot(selection, capture);
+    match server {
+        Some(server) => server.publish(snapshot),
+        None => snapshot,
+    }
+}
+
+async fn change_capture(
+    capture: &mut Option<Capture>,
+    state: &mut CaptureState,
+    enabled: bool,
+) -> Result<(), String> {
+    let result = async {
+        if enabled && state.status == "enabled" { return Ok(()); }
+        if let Some(current) = capture.as_mut() { current.stop().map_err(|e| e.to_string())?; }
+        capture.take();
+        if enabled {
+            *capture = Some(Capture::start().await.map_err(|e| e.to_string())?);
+            eprintln!("CAPTURE READY: hardware transport keys acquired; Ctrl+C restores Cinnamon bindings.");
+        } else if state.status == "faulted" {
+            media_router::input::restore_bindings().map_err(|e| e.to_string())?;
+        }
+        Ok::<(), String>(())
+    }.await;
+    match &result {
+        Ok(()) => {
+            *state = CaptureState {
+                status: if enabled { "enabled" } else { "disabled" }.into(),
+                error: String::new(),
+            }
+        }
+        Err(error) => {
+            *state = CaptureState {
+                status: "faulted".into(),
+                error: error.clone(),
+            }
+        }
     }
     result
 }

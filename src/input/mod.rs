@@ -26,31 +26,44 @@ impl Capture {
         let lease = Lease::open(Cinnamon::new()?, state_directory()?)?;
         lease.restore()?;
         let keyboard = x11::Keyboard::connect()?;
-        let capture = Self {
+        let mut capture = Self {
             keyboard: Some(keyboard),
             lease,
         };
-        capture.lease.acquire()?;
-        // Cinnamon releases its old grabs asynchronously after the settings
-        // notification. Retry acquisition briefly; never retry media commands.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            match capture
-                .keyboard
-                .as_ref()
-                .expect("keyboard connected")
-                .grab()
-            {
-                Ok(()) => return Ok(capture),
-                Err(error) if tokio::time::Instant::now() >= deadline => {
-                    return Err(format!("cannot acquire transport keys: {error}").into());
+        let result = async {
+            capture.lease.acquire()?;
+            // Cinnamon releases its old grabs asynchronously after the settings
+            // notification. Retry acquisition briefly; never retry media commands.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                match capture
+                    .keyboard
+                    .as_ref()
+                    .expect("keyboard connected")
+                    .grab()
+                {
+                    Ok(()) => return Ok::<(), Error>(()),
+                    Err(error) if tokio::time::Instant::now() >= deadline => {
+                        return Err(format!("cannot acquire transport keys: {error}").into());
+                    }
+                    Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
                 }
-                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-            }
-            if !capture.lease.unchanged()? {
-                return Err("Cinnamon shortcuts changed during capture startup".into());
+                if !capture.lease.unchanged()? {
+                    return Err("Cinnamon shortcuts changed during capture startup".into());
+                }
             }
         }
+        .await;
+        if let Err(error) = result {
+            return match capture.stop() {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!(
+                    "{error}; restoration failed: {cleanup}; run --restore-bindings"
+                )
+                .into()),
+            };
+        }
+        Ok(capture)
     }
     pub async fn next(&mut self) -> Result<TransportAction> {
         loop {

@@ -220,10 +220,13 @@ struct Router {
 }
 impl Router {
     fn start(desktop: &Desktop) -> Self {
+        Self::with_args(desktop, &["--capture", "--select", "selected"])
+    }
+    fn with_args(desktop: &Desktop, args: &[&str]) -> Self {
         let mut process = Process(
             desktop
                 .command()
-                .args(["--capture", "--select", "selected"])
+                .args(args)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -534,4 +537,80 @@ async fn unavailable_inputs_are_dropped_and_mapping_changes_restore_bindings() {
         .unwrap();
     router.exit(false).await;
     desktop.restored().await;
+}
+
+#[tokio::test]
+async fn api_controls_capture_routes_runtime_selection_and_keeps_faults_recoverable() {
+    use media_router::dbus_api::{NAME, PATH, State};
+    let desktop = Desktop::new();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let connection = zbus::connection::Builder::address(desktop.address.as_str())
+        .unwrap()
+        .name("org.mpris.MediaPlayer2.selected")
+        .unwrap()
+        .serve_at("/org/mpris/MediaPlayer2", Root)
+        .unwrap()
+        .serve_at("/org/mpris/MediaPlayer2", Player(calls.clone()))
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let mut router = Router::with_args(&desktop, &["--serve"]);
+    router.expect("API READY").await;
+    let api = zbus::Proxy::new(&connection, NAME, PATH, NAME)
+        .await
+        .unwrap();
+    router.expect("PLAYER ADDED").await;
+    let initial: State = api.call("GetState", &()).await.unwrap();
+    assert_eq!(initial.capture.status, "disabled");
+    assert!(!desktop.journal().exists());
+    let selected: State = api
+        .call("SelectApplication", &("desktop-entry", "selected"))
+        .await
+        .unwrap();
+    assert!(selected.selected.available);
+    let enabled: State = api.call("SetCaptureEnabled", &(true,)).await.unwrap();
+    assert_eq!(enabled.capture.status, "enabled");
+    desktop.value("play", &["<Control><Alt>p"]).await;
+    desktop.tap(desktop.codes[4]);
+    router.expect("COMMAND ACKNOWLEDGED: next").await;
+    let _: State = api
+        .call("SelectApplication", &("desktop-entry", "absent"))
+        .await
+        .unwrap();
+    desktop.tap(desktop.codes[4]);
+    router.expect("COMMAND SKIPPED: next: Unavailable").await;
+    assert_eq!(*calls.lock().unwrap(), ["next"]);
+    let disabled: State = api.call("SetCaptureEnabled", &(false,)).await.unwrap();
+    assert_eq!(disabled.capture.status, "disabled");
+    assert_eq!(disabled.selected.value, "absent");
+    desktop.restored().await;
+    let _: State = api.call("SetCaptureEnabled", &(true,)).await.unwrap();
+    // A malformed recovery file must not be reported as a successful disable.
+    let journal = fs::read(desktop.journal()).unwrap();
+    fs::write(desktop.journal(), b"{").unwrap();
+    let failure: zbus::Result<State> = api.call("SetCaptureEnabled", &(false,)).await;
+    assert!(failure.is_err());
+    let fault: State = api.call("GetState", &()).await.unwrap();
+    assert_eq!(fault.capture.status, "faulted");
+    assert!(!fault.capture.error.is_empty());
+    assert!(desktop.journal().exists());
+    fs::write(desktop.journal(), journal).unwrap();
+    let recovered: State = api.call("SetCaptureEnabled", &(false,)).await.unwrap();
+    assert_eq!(recovered.capture.status, "disabled");
+    desktop.restored().await;
+    // Input backend failure ends capture, while the API and selection survive.
+    let _: State = api.call("SetCaptureEnabled", &(true,)).await.unwrap();
+    desktop.settings.set_strv("next", ["<Super>n"]).unwrap();
+    gio::Settings::sync();
+    router.expect("CAPTURE FAULT").await;
+    let fault: State = api.call("GetState", &()).await.unwrap();
+    assert_eq!(fault.capture.status, "faulted");
+    assert_eq!(fault.selected.value, "absent");
+    desktop.value("next", &["<Super>n"]).await;
+    let _: State = api.call("ClearSelection", &()).await.unwrap();
+    let _: State = api.call("SetCaptureEnabled", &(false,)).await.unwrap();
+    desktop.restored().await;
+    router.signal("-TERM");
+    router.exit(true).await;
 }

@@ -71,8 +71,9 @@ disappears, another matching instance is chosen by service-name ordering.
 The selection never switches to a different application because one closes.
 
 Selection lasts for the current router process and is not saved to disk.
-Restart the command with another selection argument to change it, or with
-no argument to observe players without selecting one. Selection currently
+Restart the command with another selection argument to change it, or use
+the D-Bus API when running with `--serve`. With no selection argument,
+startup displays players without selecting one. Selection currently
 reports availability; add `--interactive` to send terminal commands or
 `--capture` to route hardware transport keys.
 Use `--help` for usage.
@@ -115,7 +116,8 @@ The output distinguishes:
 
 Checks and the method reply each have a two-second timeout. No transport
 method is automatically retried. Close standard input (Ctrl+D in a terminal)
-to finish pending commands and exit, or press Ctrl+C to exit immediately.
+to finish pending commands and exit when neither `--serve` nor `--capture`
+is enabled, or press Ctrl+C to exit immediately.
 An in-flight command may already have executed when interrupted.
 
 Without `--capture`, terminal commands do not change desktop keybindings.
@@ -148,10 +150,12 @@ restores the prior settings. Only one capture/recovery process may run
 against the same state directory.
 
 If another application holds the required keys, startup fails and rolls
-back the changes. Capture also stops and restores bindings if the relevant
+back the changes. Capture also stops and attempts to restore bindings if the relevant
 keyboard mappings change, the X connection fails, or a binding changed by
 the router is edited externally. Restart after a keyboard mapping change.
 External edits are preserved during restoration, with a diagnostic.
+With `--serve`, capture failures leave discovery and API access running,
+with a fault status. Without `--serve`, capture failures end the process.
 
 ### Recovering after a crash
 
@@ -178,6 +182,30 @@ Restoration preserves explicit settings and inherited defaults. Detecting
 external edits is best effort: comparison and writing are not atomic, and
 an edit identical to the router’s temporary value is indistinguishable.
 There is no watchdog for immediate crash recovery.
+
+## Controlling the running daemon
+
+```sh
+cargo run --locked -- --serve
+```
+
+`--serve` exposes the session-bus service `org.mediarouter.MediaRouter1`.
+It lets clients read applications and availability, change or clear the
+selection, enable/disable capture, and receive state updates. Capture
+starts disabled unless `--capture` is also supplied. Standard input closing
+does not stop a serving daemon. Press Ctrl+C to stop and restore bindings.
+
+For example, use these optional diagnostic commands from another terminal:
+
+```sh
+busctl --user call org.mediarouter.MediaRouter1 /org/mediarouter/MediaRouter1 org.mediarouter.MediaRouter1 SelectApplication ss desktop-entry spotify
+busctl --user call org.mediarouter.MediaRouter1 /org/mediarouter/MediaRouter1 org.mediarouter.MediaRouter1 SetCaptureEnabled b true
+```
+
+Only one API server can run on a session bus. Snapshots and revision numbers
+remain in RAM; selection and preferences are not yet saved across router
+restarts. See the [D-Bus API reference](docs/DBUS_API.md) for the full
+contract, recovery behavior, client synchronization, and examples.
 
 ## Contributing
 

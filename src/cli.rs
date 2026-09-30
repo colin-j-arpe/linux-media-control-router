@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use media_router::player::selection::ApplicationId;
 
 pub const HELP: &str =
-    "Usage: media-router [--select DESKTOP_ENTRY | --select-identity IDENTITY] [--interactive] [--capture]
+    "Usage: media-router [--select DESKTOP_ENTRY | --select-identity IDENTITY] [--interactive] [--capture] [--serve]
        media-router --restore-bindings
 
 Watch MPRIS players and report the selected application's availability.
@@ -12,6 +12,7 @@ Watch MPRIS players and report the selected application's availability.
   --select-identity NAME   Select by exact Identity when DesktopEntry is absent.
   --interactive            Accept transport commands from standard input.
   --capture                Capture hardware transport keys on Cinnamon/X11.
+  --serve                  Expose the session-bus API; keep running after stdin EOF.
   --restore-bindings       Recover saved Cinnamon bindings and exit.
   -h, --help               Show this help.
 
@@ -20,8 +21,8 @@ Quote Identity values containing spaces. Matching is exact and case-sensitive.
 Selection is retained while this process runs, including when a player exits
 and returns. It is not saved across router restarts. Press Ctrl+C to stop.
 Interactive commands: play-pause, stop, previous, next (one per line).
-Without --interactive or --capture this command only observes players.
-End terminal input to finish pending commands (capture continues if enabled).
+Without --serve, --interactive, or --capture this command only observes players.
+End terminal input to finish pending commands; serving or capture keeps running.
 Press Ctrl+C to stop and restore captured bindings.";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -30,6 +31,7 @@ pub enum Command {
         selected: Option<ApplicationId>,
         interactive: bool,
         capture: bool,
+        serve: bool,
     },
     Help,
     RestoreBindings,
@@ -53,11 +55,13 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, S
     let mut selected = None;
     let mut interactive = false;
     let mut capture = false;
+    let mut serve = false;
     let mut arguments = arguments.into_iter();
     while let Some(option) = arguments.next() {
         match option.as_str() {
             "--interactive" if !interactive => interactive = true,
             "--capture" if !capture => capture = true,
+            "--serve" if !serve => serve = true,
             "--select" | "--select-identity" if selected.is_none() => {
                 let value = arguments
                     .next()
@@ -65,6 +69,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, S
                 if matches!(
                     value.as_str(),
                     "--capture"
+                        | "--serve"
                         | "--interactive"
                         | "--restore-bindings"
                         | "--select"
@@ -85,7 +90,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, S
             }
             _ => {
                 return Err(format!(
-                    "expected a single selection option and optional --interactive/--capture; unexpected argument {option:?}"
+                    "expected a single selection option and optional --interactive/--capture/--serve; unexpected argument {option:?}"
                 ));
             }
         }
@@ -94,6 +99,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, S
         selected,
         interactive,
         capture,
+        serve,
     })
 }
 
@@ -112,7 +118,8 @@ mod tests {
             Command::Watch {
                 selected: None,
                 interactive: false,
-                capture: false
+                capture: false,
+                serve: false
             }
         );
         assert_eq!(
@@ -120,7 +127,8 @@ mod tests {
             Command::Watch {
                 selected: Some(ApplicationId::DesktopEntry("spotify".into())),
                 interactive: false,
-                capture: false
+                capture: false,
+                serve: false
             }
         );
         for identity in ["Spotify", "Player With Spaces", " Lecteur 音楽 ", ""] {
@@ -129,7 +137,8 @@ mod tests {
                 Command::Watch {
                     selected: Some(ApplicationId::Identity(identity.into())),
                     interactive: false,
-                    capture: false
+                    capture: false,
+                    serve: false
                 }
             );
         }
@@ -159,6 +168,7 @@ mod tests {
             selected: Some(ApplicationId::DesktopEntry("spotify".into())),
             interactive: true,
             capture: false,
+            serve: false,
         };
         assert_eq!(
             args(&["--select", "spotify", "--interactive"]).unwrap(),
@@ -173,7 +183,8 @@ mod tests {
             Command::Watch {
                 selected: None,
                 interactive: true,
-                capture: false
+                capture: false,
+                serve: false
             }
         );
     }
@@ -185,7 +196,8 @@ mod tests {
             Command::Watch {
                 selected: None,
                 interactive: false,
-                capture: true
+                capture: true,
+                serve: false
             }
         );
         assert_eq!(
@@ -199,6 +211,33 @@ mod tests {
             vec!["--select", "--capture"],
         ] {
             assert!(args(&input).is_err());
+        }
+    }
+
+    #[test]
+    fn serving_is_opt_in_and_combines_with_existing_options() {
+        assert_eq!(
+            args(&[
+                "--serve",
+                "--capture",
+                "--interactive",
+                "--select",
+                "spotify"
+            ])
+            .unwrap(),
+            Command::Watch {
+                selected: Some(ApplicationId::DesktopEntry("spotify".into())),
+                interactive: true,
+                capture: true,
+                serve: true
+            }
+        );
+        for arguments in [
+            vec!["--serve", "--serve"],
+            vec!["--restore-bindings", "--serve"],
+            vec!["--select", "--serve"],
+        ] {
+            assert!(args(&arguments).is_err());
         }
     }
 

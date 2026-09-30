@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<node name="/org/mediarouter/MediaRouter1">
+  <interface name="org.mediarouter.MediaRouter1">
+    <!-- See DBUS_API.md for ordered fields, enumerated strings, and semantics. -->
+    <method name="GetState">
+      <arg name="state" type="(ta(sssu)(ssbss)(ss))" direction="out"/>
+    </method>
+    <method name="SelectApplication">
+      <arg name="kind" type="s" direction="in"/>
+      <arg name="value" type="s" direction="in"/>
+      <arg name="state" type="(ta(sssu)(ssbss)(ss))" direction="out"/>
+    </method>
+    <method name="ClearSelection">
+      <arg name="state" type="(ta(sssu)(ssbss)(ss))" direction="out"/>
+    </method>
+    <method name="SetCaptureEnabled">
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="state" type="(ta(sssu)(ssbss)(ss))" direction="out"/>
+    </method>
+    <signal name="StateChanged">
+      <arg name="state" type="(ta(sssu)(ssbss)(ss))"/>
+    </signal>
+  </interface>
+</node>
