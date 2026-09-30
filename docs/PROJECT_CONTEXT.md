@@ -791,10 +791,10 @@ merged into `main`.
 Milestone 6 is complete; the user confirmed that CLI service commands
 function as expected. The user committed, pushed, and merged Milestone 6
 into `main`, then authorized Milestone 6.1 for CLI abbreviations on
-`feature/6.1-cli-switches`. Milestone 6.1 implementation and verification
-are complete, awaiting user review and its separate commit/merge. Obtain
-user approval before Milestone 7
-(persistence/startup). Capture is opt-in, and recovery is available on capture startup or through
+`feature/6.1-cli-switches`. Milestone 6.1 is complete; the user confirmed
+that its changes were committed, pushed, and merged into `main`. Obtain
+user approval before Milestone 7 (persistence/startup). Capture is opt-in,
+and recovery is available on capture startup or through
 `--restore-bindings`. Routing refreshes relevant capabilities at dispatch
 time. Selection persistence across router restarts remains Milestone 7.
 
@@ -1292,7 +1292,7 @@ contract. Selection/preference disk storage, auto-selection policy, startup
 integration, and the tray UI remain future milestones. Milestone 7 has not
 been authorized.
 
-## Milestone 6.1 implementation completed — CLI abbreviations — 2026-09-30
+## Milestone 6.1 completed — CLI abbreviations — 2026-09-30
 
 The user authorized this change on `feature/6.1-cli-switches` for a separate
 commit and merge before Milestone 7. The working tree was clean at the start.
@@ -1319,8 +1319,9 @@ are updated.
 Verification passed: all 55 tests (including 11 CLI parser tests), Clippy
 with warnings denied, formatting, and whitespace checks. RustRover's build
 succeeded; inspections of `src/cli.rs` and `tests/discovery.rs` reported no
-errors or warnings. No live desktop settings were changed. User review and
-the separate commit/merge remain pending; Milestone 7 is not authorized.
+errors or warnings. No live desktop settings were changed. The user confirmed
+that the changes were committed, pushed, and merged into `main` separately
+from Milestone 7. Milestone 7 is not authorized.
 
 ## License decision — 2026-09-26
 
@@ -1338,9 +1339,8 @@ the original license text and should remain unchanged.
 
 - Proceed incrementally, with user approval before each new milestone.
   Milestones 1 through 6 are complete, including the user-confirmed
-  physical-key and CLI service-command checks. Milestone 6.1 is authorized
-  for CLI abbreviations; implementation and verification are complete,
-  awaiting review and separate commit/merge. Milestone 7 has not been authorized.
+  physical-key and CLI service-command checks. Milestone 6.1 is complete
+  and merged into `main`. Milestone 7 has not been authorized.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.
