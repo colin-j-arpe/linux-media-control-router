@@ -1,6 +1,6 @@
 # Media Router D-Bus API, version 1
 
-Start the service with `media-router --serve`. It uses the user session bus:
+Start the service with `media-router --serve` (or `media-router -s`). It uses the user session bus:
 
 - Bus name and interface: `org.mediarouter.MediaRouter1`
 - Object path: `/org/mediarouter/MediaRouter1`

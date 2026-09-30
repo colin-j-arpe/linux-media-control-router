@@ -505,17 +505,23 @@ async fn selected_player(bus: &PrivateBus, name: &str, fallback: bool) -> Connec
 
 #[tokio::test]
 async fn cli_retains_desktop_and_fallback_selections_across_instance_lifecycles() {
-    for fallback in [false, true] {
+    for (fallback, short) in [(false, false), (true, false), (false, true), (true, true)] {
         let bus = PrivateBus::start();
         let other_name = "org.mpris.MediaPlayer2.other";
         let _other = selected_player(&bus, other_name, !fallback).await;
         let (arguments, label) = if fallback {
             (
-                ["--select-identity", "Anonymous Player"],
+                [
+                    if short { "-I" } else { "--select-identity" },
+                    "Anonymous Player",
+                ],
                 "identity \"Anonymous Player\"",
             )
         } else {
-            (["--select", "test-player"], "desktop-entry \"test-player\"")
+            (
+                [if short { "-p" } else { "--select" }, "test-player"],
+                "desktop-entry \"test-player\"",
+            )
         };
         let mut cli = Cli::start(&bus, &arguments);
         let unavailable = vec![
@@ -573,11 +579,16 @@ async fn cli_retains_desktop_and_fallback_selections_across_instance_lifecycles(
 fn cli_help_and_argument_errors_do_not_require_a_session_bus() {
     for (arguments, exit_code, expected) in [
         (vec!["--help"], 0, "--select-identity"),
+        (vec!["-h"], 0, "-ics"),
+        (vec!["-icx"], 2, "unknown short option -x"),
+        (vec!["-c", "--capture"], 2, "duplicate"),
+        (vec!["-icsp"], 2, "expected a value"),
+        (vec!["-ih"], 2, "must be used alone"),
         (vec!["--select"], 2, "expected"),
         (
             vec!["--select", "a", "--select-identity", "b"],
             2,
-            "expected",
+            "selection",
         ),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_media-router"))

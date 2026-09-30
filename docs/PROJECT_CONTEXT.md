@@ -789,7 +789,11 @@ Milestones 1 through 5 are complete. The user confirmed a successful
 physical-key test through the CLI and that all changes were committed and
 merged into `main`.
 Milestone 6 is complete; the user confirmed that CLI service commands
-function as expected. Obtain user approval before Milestone 7
+function as expected. The user committed, pushed, and merged Milestone 6
+into `main`, then authorized Milestone 6.1 for CLI abbreviations on
+`feature/6.1-cli-switches`. Milestone 6.1 implementation and verification
+are complete, awaiting user review and its separate commit/merge. Obtain
+user approval before Milestone 7
 (persistence/startup). Capture is opt-in, and recovery is available on capture startup or through
 `--restore-bindings`. Routing refreshes relevant capabilities at dispatch
 time. Selection persistence across router restarts remains Milestone 7.
@@ -1288,6 +1292,36 @@ contract. Selection/preference disk storage, auto-selection policy, startup
 integration, and the tray UI remain future milestones. Milestone 7 has not
 been authorized.
 
+## Milestone 6.1 implementation completed — CLI abbreviations — 2026-09-30
+
+The user authorized this change on `feature/6.1-cli-switches` for a separate
+commit and merge before Milestone 7. The working tree was clean at the start.
+
+Approved aliases: `-i` for `--interactive`, `-c` for `--capture`, `-s` for
+`--serve`, `-p` for `--select`, and `-I` for `--select-identity`. Existing
+`-h` remains help; `--restore-bindings` stays long-only. Flags can group as
+`-ics`. Value-taking short options consume the rest of their group or the
+next argument, allowing `-p spotify`, `-pspotify`, and `-icsp spotify`.
+
+The parser maps short forms to the same validation path as long options.
+Duplicates, multiple selections, unknown options, and missing values remain
+errors. Help and recovery remain standalone. Option-like separate arguments
+starting with `-` are rejected as missing selection values; attach such
+literal values to `-p` or `-I` instead. Exact fallback identities, including
+Unicode, whitespace, and an explicitly empty value, remain supported.
+
+No dependencies or application runtime behavior are changed. CLI unit tests
+cover grouping, values, identity preservation, and rejection cases. Executable
+tests exercise selection lifecycles using long and short forms and verify
+help/argument errors before bus access. Help, README, and the API reference
+are updated.
+
+Verification passed: all 55 tests (including 11 CLI parser tests), Clippy
+with warnings denied, formatting, and whitespace checks. RustRover's build
+succeeded; inspections of `src/cli.rs` and `tests/discovery.rs` reported no
+errors or warnings. No live desktop settings were changed. User review and
+the separate commit/merge remain pending; Milestone 7 is not authorized.
+
 ## License decision — 2026-09-26
 
 The user selected Apache License 2.0 for the project. The full, unmodified
@@ -1304,8 +1338,9 @@ the original license text and should remain unchanged.
 
 - Proceed incrementally, with user approval before each new milestone.
   Milestones 1 through 6 are complete, including the user-confirmed
-  physical-key and CLI service-command checks. Milestone 7 has not been
-  authorized.
+  physical-key and CLI service-command checks. Milestone 6.1 is authorized
+  for CLI abbreviations; implementation and verification are complete,
+  awaiting review and separate commit/merge. Milestone 7 has not been authorized.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.

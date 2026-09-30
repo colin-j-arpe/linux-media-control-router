@@ -8,13 +8,19 @@ pub const HELP: &str =
 
 Watch MPRIS players and report the selected application's availability.
 
-  --select DESKTOP_ENTRY    Select by DesktopEntry (for example: spotify).
-  --select-identity NAME   Select by exact Identity when DesktopEntry is absent.
-  --interactive            Accept transport commands from standard input.
-  --capture                Capture hardware transport keys on Cinnamon/X11.
-  --serve                  Expose the session-bus API; keep running after stdin EOF.
-  --restore-bindings       Recover saved Cinnamon bindings and exit.
-  -h, --help               Show this help.
+  -p, --select DESKTOP_ENTRY    Select by DesktopEntry (for example: spotify).
+  -I, --select-identity NAME    Select by exact Identity when DesktopEntry is absent.
+  -i, --interactive             Accept transport commands from standard input.
+  -c, --capture                 Capture hardware transport keys on Cinnamon/X11.
+  -s, --serve                   Expose the session-bus API; keep running after stdin EOF.
+      --restore-bindings        Recover saved Cinnamon bindings and exit.
+  -h, --help                    Show this help.
+
+Short flags can be grouped: -ics means --interactive --capture --serve.
+Values may follow or attach: -p spotify, -pspotify, -icsp spotify.
+-p and -I consume the rest of their group as a value, or the next argument.
+Attach values beginning with '-' (for example: -I-name). Options are case-sensitive.
+Help and recovery must be used alone. Duplicate options are errors.
 
 With no selection argument, players are displayed without selecting one.
 Quote Identity values containing spaces. Matching is exact and case-sensitive.
@@ -52,55 +58,94 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, S
     if arguments == ["--restore-bindings"] {
         return Ok(Command::RestoreBindings);
     }
-    let mut selected = None;
-    let mut interactive = false;
-    let mut capture = false;
-    let mut serve = false;
+    let mut options = Options::default();
     let mut arguments = arguments.into_iter();
-    while let Some(option) = arguments.next() {
-        match option.as_str() {
-            "--interactive" if !interactive => interactive = true,
-            "--capture" if !capture => capture = true,
-            "--serve" if !serve => serve = true,
-            "--select" | "--select-identity" if selected.is_none() => {
-                let value = arguments
-                    .next()
-                    .ok_or_else(|| format!("expected a value after {option}"))?;
-                if matches!(
-                    value.as_str(),
-                    "--capture"
-                        | "--serve"
-                        | "--interactive"
-                        | "--restore-bindings"
-                        | "--select"
-                        | "--select-identity"
-                        | "--help"
-                        | "-h"
-                ) {
-                    return Err(format!("expected a value after {option}"));
-                }
-                if option == "--select" {
-                    if value.is_empty() {
-                        return Err("--select requires a nonempty DesktopEntry".into());
-                    }
-                    selected = Some(ApplicationId::DesktopEntry(value));
-                } else {
-                    selected = Some(ApplicationId::Identity(value));
+    while let Some(argument) = arguments.next() {
+        if let Some(short) = argument
+            .strip_prefix('-')
+            .filter(|s| !s.starts_with('-') && !s.is_empty())
+        {
+            for (offset, character) in short.char_indices() {
+                let option = match character {
+                    'i' => "--interactive",
+                    'c' => "--capture",
+                    's' => "--serve",
+                    'p' => "--select",
+                    'I' => "--select-identity",
+                    'h' => return Err("-h/--help must be used alone".into()),
+                    _ => return Err(format!("unknown short option -{character} in {argument:?}")),
+                };
+                let takes_value = matches!(character, 'p' | 'I');
+                let attached = takes_value
+                    .then(|| &short[offset + character.len_utf8()..])
+                    .filter(|s| !s.is_empty());
+                options.apply(option, attached, &mut arguments)?;
+                // Once a value-taking option occurs, the rest is its value,
+                // even if it resembles flags. char_indices preserves UTF-8.
+                if takes_value {
+                    break;
                 }
             }
-            _ => {
-                return Err(format!(
-                    "expected a single selection option and optional --interactive/--capture/--serve; unexpected argument {option:?}"
-                ));
-            }
+        } else {
+            options.apply(&argument, None, &mut arguments)?;
         }
     }
     Ok(Command::Watch {
-        selected,
-        interactive,
-        capture,
-        serve,
+        selected: options.selected,
+        interactive: options.interactive,
+        capture: options.capture,
+        serve: options.serve,
     })
+}
+
+#[derive(Default)]
+struct Options {
+    selected: Option<ApplicationId>,
+    interactive: bool,
+    capture: bool,
+    serve: bool,
+}
+impl Options {
+    fn apply(
+        &mut self,
+        option: &str,
+        attached: Option<&str>,
+        arguments: &mut impl Iterator<Item = String>,
+    ) -> Result<(), String> {
+        match option {
+            "--interactive" => set_flag(&mut self.interactive, option),
+            "--capture" => set_flag(&mut self.capture, option),
+            "--serve" => set_flag(&mut self.serve, option),
+            "--select" | "--select-identity" => {
+                if self.selected.is_some() {
+                    return Err("specify only one selection option".into());
+                }
+                let value = match attached {
+                    Some(value) => value.to_owned(),
+                    None => arguments.next().filter(|value| !(value.starts_with('-') && value.len() > 1))
+                        .ok_or_else(|| format!("expected a value after {option}; attach values starting with '-' to -p or -I"))?,
+                };
+                self.selected = Some(if option == "--select" {
+                    if value.is_empty() {
+                        return Err("--select/-p requires a nonempty DesktopEntry".into());
+                    }
+                    ApplicationId::DesktopEntry(value)
+                } else {
+                    ApplicationId::Identity(value)
+                });
+                Ok(())
+            }
+            "--help" | "--restore-bindings" => Err(format!("{option} must be used alone")),
+            _ => Err(format!("unexpected argument {option:?}")),
+        }
+    }
+}
+fn set_flag(flag: &mut bool, option: &str) -> Result<(), String> {
+    if *flag {
+        return Err(format!("duplicate option {option}"));
+    }
+    *flag = true;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -239,6 +284,133 @@ mod tests {
         ] {
             assert!(args(&arguments).is_err());
         }
+    }
+
+    #[test]
+    fn short_flags_and_groups_match_long_options_in_any_order() {
+        let expected = args(&["--interactive", "--capture", "--serve"]).unwrap();
+        for input in [
+            vec!["-i", "-c", "-s"],
+            vec!["-ics"],
+            vec!["-isc"],
+            vec!["-cis"],
+            vec!["-csi"],
+            vec!["-sic"],
+            vec!["-sci"],
+            vec!["-ic", "--serve"],
+        ] {
+            assert_eq!(args(&input).unwrap(), expected, "{input:?}");
+        }
+        for (short, long) in [
+            ("-i", "--interactive"),
+            ("-c", "--capture"),
+            ("-s", "--serve"),
+        ] {
+            assert_eq!(args(&[short]).unwrap(), args(&[long]).unwrap());
+        }
+    }
+
+    #[test]
+    fn selection_values_can_follow_attach_or_end_a_group() {
+        let expected = args(&[
+            "--interactive",
+            "--capture",
+            "--serve",
+            "--select",
+            "spotify",
+        ])
+        .unwrap();
+        for input in [
+            vec!["-ics", "-p", "spotify"],
+            vec!["-icsp", "spotify"],
+            vec!["-icspspotify"],
+            vec!["-pspotify", "-ics"],
+            vec!["-i", "-pspotify", "--capture", "-s"],
+        ] {
+            assert_eq!(args(&input).unwrap(), expected, "{input:?}");
+        }
+        assert_eq!(
+            args(&["-p", "spotify"]).unwrap(),
+            args(&["--select", "spotify"]).unwrap()
+        );
+        // p consumes 'ics' as the value; these are not additional flags.
+        assert_eq!(
+            args(&["-pics"]).unwrap(),
+            args(&["--select", "ics"]).unwrap()
+        );
+    }
+
+    #[test]
+    fn identity_values_remain_exact_including_unicode_and_option_like_text() {
+        for value in ["Example Player", " Lecteur 音楽 ", "", "ics"] {
+            let expected = args(&["--select-identity", value, "--capture", "--serve"]).unwrap();
+            assert_eq!(args(&["-csI", value]).unwrap(), expected);
+            if !value.is_empty() {
+                assert_eq!(args(&[&format!("-csI{value}")]).unwrap(), expected);
+            }
+        }
+        for value in ["--help", "--restore-bindings", "-ics", "-", "-音楽"] {
+            assert_eq!(
+                args(&[&format!("-I{value}")]).unwrap(),
+                Command::Watch {
+                    selected: Some(ApplicationId::Identity(value.into())),
+                    interactive: false,
+                    capture: false,
+                    serve: false,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn aliases_cannot_bypass_duplicate_or_selection_conflicts() {
+        for input in [
+            vec!["-ii"],
+            vec!["-cc"],
+            vec!["-ss"],
+            vec!["-c", "--capture"],
+            vec!["--interactive", "-i"],
+            vec!["-ics", "--serve"],
+            vec!["-pfoo", "--select", "foo"],
+            vec!["--select", "foo", "-Ibar"],
+            vec!["-Ifoo", "-pbar"],
+            vec!["-Ifoo", "--select-identity", "foo"],
+        ] {
+            assert!(args(&input).is_err(), "accepted {input:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_groups_missing_values_and_combined_standalone_options_fail() {
+        for input in [
+            vec!["-p"],
+            vec!["-I"],
+            vec!["-icsp"],
+            vec!["-p", ""],
+            vec!["-p", "-ics"],
+            vec!["-I", "--help"],
+            vec!["-I", "-x"],
+            vec!["-x"],
+            vec!["-icx"],
+            vec!["-C"],
+            vec!["-音"],
+            vec!["-"],
+            vec!["--"],
+            vec!["--server"],
+            vec!["-ih"],
+            vec!["-hi"],
+            vec!["-h", "-s"],
+            vec!["--help", "-c"],
+            vec!["-ics", "--restore-bindings"],
+            vec!["--restore-bindings", "-s"],
+        ] {
+            assert!(args(&input).is_err(), "accepted {input:?}");
+        }
+        assert_eq!(args(&["-h"]).unwrap(), Command::Help);
+        assert_eq!(
+            args(&["--restore-bindings"]).unwrap(),
+            Command::RestoreBindings
+        );
     }
 
     #[cfg(unix)]
