@@ -50,6 +50,41 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Ok(cli::Command::InstallAutostart(executable)) => {
+            match media_router::autostart::directory()
+                .and_then(|directory| media_router::autostart::install(&directory, &executable))
+            {
+                Ok(path) => {
+                    println!("Autostart installed: {}", path.display());
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("media-router: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Ok(cli::Command::RemoveAutostart) => {
+            match media_router::autostart::directory()
+                .and_then(|directory| media_router::autostart::remove(&directory))
+            {
+                Ok(removed) => {
+                    println!(
+                        "{}",
+                        if removed {
+                            "Autostart entry removed. The running daemon is unchanged."
+                        } else {
+                            "No personal autostart entry is installed."
+                        }
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("media-router: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Err(error) => {
             eprintln!("media-router: {error}\nRun media-router --help for usage.");
             ExitCode::from(2)
@@ -111,7 +146,15 @@ async fn watch(
     {
         store.save(preferences.clone())?;
     }
-    if preferences.capture_enabled {
+    if serve && let Err(error) = media_router::input::recover_pending_bindings() {
+        capture_state = CaptureState {
+            status: "faulted".into(),
+            error: error.to_string(),
+        };
+        publish(&server, &selection, &capture_state);
+        eprintln!("CAPTURE FAULT: startup binding recovery failed: {error}");
+    }
+    if preferences.capture_enabled && capture_state.status != "faulted" {
         capture_state.status = "starting".into();
         publish(&server, &selection, &capture_state);
         let result = change_capture(&mut capture, &mut capture_state, true).await;

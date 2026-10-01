@@ -35,9 +35,12 @@ Long options remain supported. These short aliases are also available:
 | `--select DESKTOP_ENTRY` | `-p DESKTOP_ENTRY` |
 | `--select-identity IDENTITY` | `-I IDENTITY` |
 | `--help` | `-h` |
+| `--install-autostart PATH` | — |
+| `--remove-autostart` | — |
 
 Options are case-sensitive: `-i` enables interactive input, while `-I`
-takes a fallback Identity. `--no-capture` and `--restore-bindings` are long-only.
+takes a fallback Identity. `--no-capture`, `--restore-bindings`, and both
+autostart commands are long-only.
 `--capture` and `--no-capture` cannot be combined.
 
 Short flags can be grouped. These commands are equivalent:
@@ -66,8 +69,9 @@ invalid. No abbreviation of long option names is inferred: use `--serve`,
 not `--server`.
 
 Unknown options, missing values, duplicate options (including mixed forms
-such as `-c --capture`), and multiple selection options are errors. Help
-and recovery must each be used alone, outside a group or other options.
+such as `-c --capture`), and multiple selection options are errors. Help,
+recovery, and autostart commands must each be used alone, outside a group
+or other options.
 When running through Cargo, put app arguments after `--`, for example
 `cargo run --locked -- -ics -p spotify`.
 
@@ -211,7 +215,9 @@ with a fault status. Without `--serve`, capture failures end the process.
 
 The router saves its recovery journal **before** changing Cinnamon settings.
 After a crash, SIGKILL, or power loss, those settings can remain changed,
-even across logout. Recovery runs before the next capture session, or run:
+even across logout. Recovery runs at the next serving startup, including
+when saved capture is disabled, and before a new capture session. To
+recover manually, run:
 
 ```sh
 cargo run --locked -- --restore-bindings
@@ -231,7 +237,11 @@ When external edits are preserved, the original backup is retained as
 Restoration preserves explicit settings and inherited defaults. Detecting
 external edits is best effort: comparison and writing are not atomic, and
 an edit identical to the router’s temporary value is indistinguishable.
-There is no watchdog for immediate crash recovery.
+Serving recovery failure leaves the API available with a capture fault;
+the journal is retained and capture does not start. After addressing the
+cause, `SetCaptureEnabled(false)` retries recovery without acquiring keys.
+Recovery respects the capture lock and cannot restore bindings owned by
+a running capturer. There is no watchdog for immediate crash recovery.
 
 ## Controlling the running daemon
 
@@ -299,6 +309,44 @@ The exclusions call replaces the entire list; pass a count of `0` to clear
 it. Excluded applications remain manually selectable. Save failures appear
 as API errors and in `GetSettings().persistence_error`; automatic-selection
 save failures are also logged. See the API reference for retry semantics.
+
+## Starting at login
+
+Build and install the executable in a stable location, then explicitly
+register its absolute path. For a per-user installation:
+
+```sh
+cargo build --release --locked
+install -Dm755 target/release/media-router "$HOME/.local/bin/media-router"
+"$HOME/.local/bin/media-router" --install-autostart "$HOME/.local/bin/media-router"
+```
+
+This creates `$XDG_CONFIG_HOME/autostart/media-router.desktop`, normally
+`~/.config/autostart/media-router.desktop`. The entry launches the supplied
+executable with `--serve` at the next Cinnamon login, using saved preferences.
+Installation does not start a daemon immediately. Hardware capture still
+requires Cinnamon on X11 and an enabled capture preference.
+
+Use an installed executable rather than a file under Cargo's `target`
+directory, which a clean build can remove. The path must be absolute, valid
+UTF-8, and point to an executable file; control characters and `=` are not
+supported. Spaces and quoted characters are escaped by the installer.
+If you relocate the executable, rerun installation with the new path.
+
+The installer can update its own entry. It refuses to replace or remove
+an unrecognized entry or a symlink at that filename; inspect and move such
+an entry yourself if you want the router to manage it.
+
+To remove the personal login entry:
+
+```sh
+"$HOME/.local/bin/media-router" --remove-autostart
+```
+
+Removal leaves the running daemon and saved preferences intact. Stop the
+daemon cleanly before removing its executable; recover outstanding binding
+changes first if it crashed. Removing an already absent entry is harmless.
+These commands do not require a running session bus or X server.
 
 ## Contributing
 

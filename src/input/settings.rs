@@ -1,4 +1,5 @@
 use super::{Error, Result};
+use crate::filesystem::remove_file_if_exists;
 use gio::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -188,11 +189,7 @@ impl<S: Settings> Lease<S> {
     fn save(&self, journal: &Journal) -> Result<()> {
         let temporary = self.directory.join("bindings.tmp");
         // Only a stale, incomplete temporary file may exist while this lock is held.
-        match fs::remove_file(&temporary) {
-            Ok(()) => (),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-            Err(e) => return Err(e.into()),
-        }
+        remove_file_if_exists(&temporary)?;
         let mut file = OpenOptions::new()
             .create_new(true)
             .write(true)

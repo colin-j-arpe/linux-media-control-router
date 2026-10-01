@@ -91,6 +91,14 @@ as CLI capture and may take about two seconds while Cinnamon releases grabs.
 Disabling releases grabs and restores prior settings, preserving external
 edits. It retains the application selection.
 
+Before applying saved capture intent at serving startup, the daemon recovers
+any outstanding binding journal, even when capture is disabled. No journal
+means no Cinnamon settings access is needed for that recovery check. Recovery
+requires the capture lock and does not need X. A recovery failure publishes
+`faulted`, retains the journal and desired preference, and prevents capture
+startup. The API remains available; `SetCaptureEnabled(false)` retries
+recovery after the cause is addressed. A live capturer's lock is never stolen.
+
 While serving, input-backend failure stops capture and publishes a fault;
 discovery and the API remain available. A startup `--capture` failure also
 leaves a serving daemon available with a fault. Disabling a faulted backend

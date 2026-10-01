@@ -94,3 +94,14 @@ impl Drop for Capture {
 pub fn restore_bindings() -> Result<()> {
     Lease::open(Cinnamon::new()?, state_directory()?)?.restore()
 }
+
+/// Recover before applying serving capture intent, even when that intent is off.
+/// With no journal, observation-only serving needs no Cinnamon schema/backend.
+pub fn recover_pending_bindings() -> Result<()> {
+    let directory = state_directory()?;
+    match std::fs::symlink_metadata(directory.join("bindings.json")) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+        Ok(_) => Lease::open(Cinnamon::new()?, directory)?.restore(),
+    }
+}

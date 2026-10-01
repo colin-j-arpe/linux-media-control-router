@@ -2,13 +2,14 @@
 //!
 //! A store owns its file lock until dropped. Callers must save user intent before
 //! applying it to runtime state; capture itself is a separate external operation.
+use crate::filesystem::{TemporaryFile, create_private_directory, remove_file_if_exists};
 use crate::player::selection::ApplicationId;
 use serde::{Deserialize, Serialize};
 use std::{
     env, fmt,
     fs::{self, File, OpenOptions},
     io::{self, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
@@ -118,18 +119,7 @@ pub struct Store {
 
 impl Store {
     pub fn open(directory: PathBuf) -> io::Result<Self> {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&directory)?;
-        // Also make newly created parent directory entries durable.
-        for parent in directory
-            .ancestors()
-            .skip(1)
-            .filter(|p| !p.as_os_str().is_empty())
-        {
-            File::open(parent)?.sync_all()?;
-        }
+        create_private_directory(&directory)?;
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -183,11 +173,7 @@ impl Store {
             let temporary = self.directory.join("config.tmp");
             // The lock excludes other writers; an existing temporary file is
             // an incomplete previous save, never a configuration to load.
-            match fs::remove_file(&temporary) {
-                Ok(()) => (),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
-                Err(error) => return Err(error),
-            }
+            remove_file_if_exists(&temporary)?;
             let mut file = OpenOptions::new()
                 .create_new(true)
                 .write(true)
@@ -202,13 +188,6 @@ impl Store {
         replace().map_err(SaveError::NotSaved)?;
         self.preferences = preferences;
         sync_directory(&self.directory).map_err(SaveError::DurabilityUncertain)
-    }
-}
-
-struct TemporaryFile(PathBuf);
-impl Drop for TemporaryFile {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
     }
 }
 

@@ -801,12 +801,13 @@ that its changes were committed, pushed, and merged into `main`. The user
 authorized Milestone 7 (persistence/startup) on 2026-10-01, on branch
 `feature/7-startup`. The user approved the original persistence, MRO
 auto-selection, and startup policies, and deferred MRP to a future version.
-Configuration storage and daemon/API persistence with MRO selection are
-implemented and verified. The user committed Step 1 on the current branch
-without merging it. Step 2 awaits review before startup/recovery integration. Capture is opt-in,
-and recovery is available on capture startup or through
-`--restore-bindings`. Routing refreshes relevant capabilities at dispatch
-time. Selection persistence across router restarts remains Milestone 7.
+Milestone 7 implementation and isolated automated verification are complete:
+configuration storage, daemon/API persistence, MRO selection, opt-in login
+startup commands, and recovery on serving startup even with capture disabled.
+The user committed Steps 1 and 2 on the current branch without merging them;
+Step 3 is ready for review. No live autostart installation or actual login
+check has been performed. MRP remains a documented future proposal.
+Milestone 8 (tray client) requires a new user approval.
 
 Before adding dependencies, verify current Rust crate choices and
 versions rather than relying on old examples.
@@ -1461,8 +1462,8 @@ merging into main, and authorized Step 2. Daemon integration follows below.
 ### Step 2 implemented — daemon persistence and MRO — 2026-10-01
 
 The user authorized integration after committing Step 1 on the same branch.
-Step 2 is implemented and verified. Milestone 7 remains in progress; the
-next review checkpoint is before login-startup and recovery integration.
+Step 2 was implemented and verified at this checkpoint. The user then
+committed it on the current branch without merging and authorized Step 3.
 
 - Serving opens the configuration store and restores logical selection,
   desired capture state, and MRO preferences. Diagnostic runs remain
@@ -1518,10 +1519,67 @@ next review checkpoint is before login-startup and recovery integration.
   or new Rust files reported no warnings or errors. No live desktop settings,
   preferences, or login entries were changed by automated verification.
 
-Remaining Step 3: opt-in autostart install/remove commands and serving
-startup recovery even when saved capture is disabled. Current recovery is
-still on capture startup, explicit recovery, or retrying a faulted disable.
-No live autostart installation is authorized. The user handles Git updates.
+### Step 3 implemented — login startup and recovery — 2026-10-01
+
+The user authorized Step 3 after committing Step 2 without merging to main.
+Milestone 7 implementation and automated verification are complete. The
+user's actual login session has not been modified or used for a login test.
+
+- Add standalone long-only CLI commands `--install-autostart PATH` and
+  `--remove-autostart`. Installation takes the explicitly chosen installed
+  executable's absolute UTF-8 path and verifies it is an executable file.
+  It never launches that executable. Invalid targets fail before creating
+  startup files. Paths containing control characters or `=` are rejected.
+- `src/autostart.rs` manages the personal XDG entry, normally
+  `~/.config/autostart/media-router.desktop`. Exec invokes the chosen path
+  with `--serve`; TryExec names the same file. OnlyShowIn is `X-Cinnamon;`,
+  and Terminal is false. Capture still enforces Cinnamon/X11 at runtime.
+- Exec arguments are quoted using Desktop Entry rules, including literal
+  percent signs, with GLib KeyFile handling the additional string-escaping
+  layer. No shell is invoked. Existing GLib/GIO is reused; no new dependencies.
+- A held lock serializes autostart changes. Installation writes a synced
+  temporary file, renames, and syncs the directory. Removal syncs the
+  directory and reports post-removal sync failures explicitly. Files carry
+  `X-MediaRouter-Managed=true`; unrecognized entries and symlink entries are
+  preserved and reported. Reinstall updates a managed entry; removing an
+  absent entry succeeds without creating an autostart directory. Removing
+  an entry does not stop a running daemon or erase saved preferences.
+- After acquiring the API bus name and recording any explicit CLI overrides,
+  serving checks for an outstanding binding journal before applying capture
+  intent. With no journal, recovery needs no Cinnamon schema or settings
+  access. With a journal, it uses the existing settings lease and lock and
+  can restore without X, including when capture is disabled.
+- Recovery failure keeps the API/discovery available, publishes a capture
+  fault, retains recovery data and desired capture intent, and skips capture
+  startup. Retrying SetCaptureEnabled(false) runs recovery after the cause
+  is addressed. Active capture locks prevent stealing another process's
+  settings. Existing clean shutdown and manual recovery remain unchanged;
+  no watchdog or immediate crash restart was added.
+- README and CLI help document installation/removal and recovery. The D-Bus
+  reference explains startup faults and retry semantics. The interface wire
+  format is unchanged in this step.
+- All 81 tests passed: 34 library units, 13 CLI units, seven API integrations,
+  one autostart CLI integration, eight discovery integrations, eight input
+  integrations, and ten routing integrations. New tests cover quoting,
+  managed-entry replacement/removal, invalid targets, locks, failed writes,
+  symlink preservation, XDG/HOME resolution, standalone CLI commands,
+  disabled-capture recovery without X, malformed startup recovery with API
+  retry, and respecting a live capturer's lock.
+- A generated entry in a temporary directory passed desktop-file-validate.
+  All startup files and settings used by tests were isolated. Installation
+  in the user's actual session remains a separate explicit action.
+- `src/filesystem.rs` holds shared private-directory creation, stale-file
+  removal, and temporary-file cleanup helpers used by configuration,
+  autostart, and journal storage. This removes duplicated file-handling
+  fragments identified by RustRover without changing the save ordering.
+- After that extraction, all 81 tests passed again. Clippy with warnings
+  denied, formatting, and whitespace checks passed. RustRover's build
+  succeeded and inspections of all ten changed/new Rust files were clean.
+
+References checked: XDG Autostart Specification and Desktop Entry Exec/value
+escaping rules at `https://specifications.freedesktop.org/autostart/latest/`,
+`https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html`,
+and `https://specifications.freedesktop.org/desktop-entry/latest/value-types.html`.
 
 ### Future-version proposal: most-recently-played selection (MRP)
 
@@ -1621,8 +1679,9 @@ the original license text and should remain unchanged.
   physical-key and CLI service-command checks. Milestone 6.1 is complete
   and merged into `main`. Milestone 7 is authorized with its original
   persistence, MRO auto-selection, and startup policies approved. MRP is
-  deferred to a future version. Review each implementation step before
-  advancing to the next.
+  deferred to a future version. Milestone 7 implementation and automated
+  verification are complete; Step 3 awaits review, and actual login startup
+  has not been tested. Milestone 8 is not authorized.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.

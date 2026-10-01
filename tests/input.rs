@@ -223,10 +223,13 @@ impl Router {
         Self::with_args(desktop, &["--capture", "--select", "selected"])
     }
     fn with_args(desktop: &Desktop, args: &[&str]) -> Self {
+        let mut command = desktop.command();
+        command.args(args);
+        Self::with_command(command)
+    }
+    fn with_command(mut command: Command) -> Self {
         let mut process = Process(
-            desktop
-                .command()
-                .args(args)
+            command
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -623,4 +626,120 @@ async fn api_controls_capture_routes_runtime_selection_and_keeps_faults_recovera
     desktop.restored().await;
     router.signal("-TERM");
     router.exit(true).await;
+}
+
+#[tokio::test]
+async fn serving_recovers_crashed_capture_even_when_capture_is_disabled_and_x_is_absent() {
+    use media_router::dbus_api::{NAME, PATH, Settings, State};
+    for saved_capture in [false, true] {
+        let desktop = Desktop::new();
+        let args = if saved_capture {
+            vec!["--serve", "--capture"]
+        } else {
+            vec!["--capture"]
+        };
+        let mut crashed = Router::with_args(&desktop, &args);
+        crashed.expect("CAPTURE READY").await;
+        crashed.process.0.kill().unwrap();
+        crashed.exit(false).await;
+        assert!(desktop.journal().exists());
+        desktop.value("play", &["<Control><Alt>p"]).await;
+        let mut command = desktop.command();
+        command
+            .arg("--serve")
+            .env_remove("DISPLAY")
+            .env("XDG_SESSION_TYPE", "wayland");
+        if saved_capture {
+            command.arg("--no-capture");
+        }
+        let mut serving = Router::with_command(command);
+        serving.expect("API READY").await;
+        desktop.restored().await;
+        let connection = zbus::connection::Builder::address(desktop.address.as_str())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let api = zbus::Proxy::new(&connection, NAME, PATH, NAME)
+            .await
+            .unwrap();
+        let state: State = api.call("GetState", &()).await.unwrap();
+        let settings: Settings = api.call("GetSettings", &()).await.unwrap();
+        assert_eq!(state.capture.status, "disabled");
+        assert!(!settings.capture_enabled);
+        serving.signal("-TERM");
+        serving.exit(true).await;
+    }
+}
+
+#[tokio::test]
+async fn malformed_startup_journal_reports_fault_and_retains_intent_until_recovery_retry() {
+    use media_router::dbus_api::{NAME, PATH, Settings, State};
+    let desktop = Desktop::new();
+    let mut crashed = Router::with_args(&desktop, &["--serve", "--capture"]);
+    crashed.expect("CAPTURE READY").await;
+    crashed.process.0.kill().unwrap();
+    crashed.exit(false).await;
+    let journal = fs::read(desktop.journal()).unwrap();
+    fs::write(desktop.journal(), b"{bad").unwrap();
+    let mut serving = Router::with_args(&desktop, &["--serve"]);
+    serving.expect("API READY").await;
+    let connection = zbus::connection::Builder::address(desktop.address.as_str())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let api = zbus::Proxy::new(&connection, NAME, PATH, NAME)
+        .await
+        .unwrap();
+    let state: State = api.call("GetState", &()).await.unwrap();
+    assert_eq!(state.capture.status, "faulted");
+    assert!(!state.capture.error.is_empty());
+    let settings: Settings = api.call("GetSettings", &()).await.unwrap();
+    assert!(settings.capture_enabled);
+    assert_eq!(fs::read(desktop.journal()).unwrap(), b"{bad");
+    desktop.value("play", &["<Control><Alt>p"]).await;
+    // Fault does not stop selection/API access or discard the recovery record.
+    let _: State = api
+        .call("SelectApplication", &("identity", "absent"))
+        .await
+        .unwrap();
+    fs::write(desktop.journal(), journal).unwrap();
+    let recovered: State = api.call("SetCaptureEnabled", &(false,)).await.unwrap();
+    assert_eq!(recovered.capture.status, "disabled");
+    desktop.restored().await;
+    serving.signal("-TERM");
+    serving.exit(true).await;
+}
+
+#[tokio::test]
+async fn serving_does_not_recover_bindings_owned_by_a_live_diagnostic_capturer() {
+    use media_router::dbus_api::{NAME, PATH, State};
+    let desktop = Desktop::new();
+    let mut capturer = Router::start(&desktop);
+    capturer.expect("CAPTURE READY").await;
+    let journal = fs::read(desktop.journal()).unwrap();
+    let mut serving = Router::with_args(&desktop, &["--serve"]);
+    serving.expect("API READY").await;
+    let connection = zbus::connection::Builder::address(desktop.address.as_str())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let api = zbus::Proxy::new(&connection, NAME, PATH, NAME)
+        .await
+        .unwrap();
+    let fault: State = api.call("GetState", &()).await.unwrap();
+    assert_eq!(fault.capture.status, "faulted");
+    assert!(fault.capture.error.contains("settings lock"));
+    assert_eq!(fs::read(desktop.journal()).unwrap(), journal);
+    desktop.value("play", &["<Control><Alt>p"]).await;
+    assert!(capturer.process.0.try_wait().unwrap().is_none());
+    capturer.signal("-TERM");
+    capturer.exit(true).await;
+    desktop.restored().await;
+    let recovered: State = api.call("SetCaptureEnabled", &(false,)).await.unwrap();
+    assert_eq!(recovered.capture.status, "disabled");
+    serving.signal("-TERM");
+    serving.exit(true).await;
 }
