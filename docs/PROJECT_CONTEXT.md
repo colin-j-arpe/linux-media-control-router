@@ -804,9 +804,10 @@ auto-selection, and startup policies, and deferred MRP to a future version.
 Milestone 7 implementation and isolated automated verification are complete:
 configuration storage, daemon/API persistence, MRO selection, opt-in login
 startup commands, and recovery on serving startup even with capture disabled.
-The user committed Steps 1 and 2 on the current branch without merging them;
-Step 3 is ready for review. No live autostart installation or actual login
-check has been performed. MRP remains a documented future proposal.
+The user confirmed that all three implementation steps are committed;
+merging to main has not been reported. The user will test installation after
+the system-tray interface is complete. No live autostart installation or
+actual login check has been performed. MRP remains a documented future proposal.
 Milestone 8 (tray client) requires a new user approval.
 
 Before adding dependencies, verify current Rust crate choices and
@@ -1524,6 +1525,9 @@ committed it on the current branch without merging and authorized Step 3.
 The user authorized Step 3 after committing Step 2 without merging to main.
 Milestone 7 implementation and automated verification are complete. The
 user's actual login session has not been modified or used for a login test.
+The user subsequently confirmed Step 3 is committed and deferred installation
+testing until the system-tray interface is complete. This manual check remains
+outstanding; it is not a prerequisite for implementing the tray interface.
 
 - Add standalone long-only CLI commands `--install-autostart PATH` and
   `--remove-autostart`. Installation takes the explicitly chosen installed
@@ -1680,8 +1684,9 @@ the original license text and should remain unchanged.
   and merged into `main`. Milestone 7 is authorized with its original
   persistence, MRO auto-selection, and startup policies approved. MRP is
   deferred to a future version. Milestone 7 implementation and automated
-  verification are complete; Step 3 awaits review, and actual login startup
-  has not been tested. Milestone 8 is not authorized.
+  verification are complete and all three steps are committed. The user has
+  deferred installation testing until the system-tray interface is complete;
+  actual login startup has not been tested. Milestone 8 is not authorized.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.
