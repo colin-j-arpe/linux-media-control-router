@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use media_router::player::selection::ApplicationId;
 
 pub const HELP: &str =
-    "Usage: media-router [--select DESKTOP_ENTRY | --select-identity IDENTITY] [--interactive] [--capture] [--serve]
+    "Usage: media-router [--select DESKTOP_ENTRY | --select-identity IDENTITY] [--interactive] [--capture | --no-capture] [--serve]
        media-router --restore-bindings
 
 Watch MPRIS players and report the selected application's availability.
@@ -12,6 +12,7 @@ Watch MPRIS players and report the selected application's availability.
   -I, --select-identity NAME    Select by exact Identity when DesktopEntry is absent.
   -i, --interactive             Accept transport commands from standard input.
   -c, --capture                 Capture hardware transport keys on Cinnamon/X11.
+      --no-capture              Disable capture, overriding a saved preference.
   -s, --serve                   Expose the session-bus API; keep running after stdin EOF.
       --restore-bindings        Recover saved Cinnamon bindings and exit.
   -h, --help                    Show this help.
@@ -22,10 +23,12 @@ Values may follow or attach: -p spotify, -pspotify, -icsp spotify.
 Attach values beginning with '-' (for example: -I-name). Options are case-sensitive.
 Help and recovery must be used alone. Duplicate options are errors.
 
-With no selection argument, players are displayed without selecting one.
+With --serve, selection and preferences are loaded and saved across restarts.
+Explicit selection/capture flags override and save those preferences.
+Without --serve, preferences are ignored and selection defaults to none.
 Quote Identity values containing spaces. Matching is exact and case-sensitive.
 Selection is retained while this process runs, including when a player exits
-and returns. It is not saved across router restarts. Press Ctrl+C to stop.
+and returns. Press Ctrl+C to stop.
 Interactive commands: play-pause, stop, previous, next (one per line).
 Without --serve, --interactive, or --capture this command only observes players.
 End terminal input to finish pending commands; serving or capture keeps running.
@@ -36,7 +39,7 @@ pub enum Command {
     Watch {
         selected: Option<ApplicationId>,
         interactive: bool,
-        capture: bool,
+        capture: Option<bool>,
         serve: bool,
     },
     Help,
@@ -102,7 +105,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, S
 struct Options {
     selected: Option<ApplicationId>,
     interactive: bool,
-    capture: bool,
+    capture: Option<bool>,
     serve: bool,
 }
 impl Options {
@@ -114,7 +117,17 @@ impl Options {
     ) -> Result<(), String> {
         match option {
             "--interactive" => set_flag(&mut self.interactive, option),
-            "--capture" => set_flag(&mut self.capture, option),
+            "--capture" | "--no-capture" => {
+                if let Some(previous) = self.capture {
+                    return Err(if previous == (option == "--capture") {
+                        format!("duplicate option {option}")
+                    } else {
+                        "--capture/-c conflicts with --no-capture".into()
+                    });
+                }
+                self.capture = Some(option == "--capture");
+                Ok(())
+            }
             "--serve" => set_flag(&mut self.serve, option),
             "--select" | "--select-identity" => {
                 if self.selected.is_some() {
@@ -163,7 +176,7 @@ mod tests {
             Command::Watch {
                 selected: None,
                 interactive: false,
-                capture: false,
+                capture: None,
                 serve: false
             }
         );
@@ -172,7 +185,7 @@ mod tests {
             Command::Watch {
                 selected: Some(ApplicationId::DesktopEntry("spotify".into())),
                 interactive: false,
-                capture: false,
+                capture: None,
                 serve: false
             }
         );
@@ -182,7 +195,7 @@ mod tests {
                 Command::Watch {
                     selected: Some(ApplicationId::Identity(identity.into())),
                     interactive: false,
-                    capture: false,
+                    capture: None,
                     serve: false
                 }
             );
@@ -212,7 +225,7 @@ mod tests {
         let expected = Command::Watch {
             selected: Some(ApplicationId::DesktopEntry("spotify".into())),
             interactive: true,
-            capture: false,
+            capture: None,
             serve: false,
         };
         assert_eq!(
@@ -228,7 +241,7 @@ mod tests {
             Command::Watch {
                 selected: None,
                 interactive: true,
-                capture: false,
+                capture: None,
                 serve: false
             }
         );
@@ -241,7 +254,7 @@ mod tests {
             Command::Watch {
                 selected: None,
                 interactive: false,
-                capture: true,
+                capture: Some(true),
                 serve: false
             }
         );
@@ -273,7 +286,7 @@ mod tests {
             Command::Watch {
                 selected: Some(ApplicationId::DesktopEntry("spotify".into())),
                 interactive: true,
-                capture: true,
+                capture: Some(true),
                 serve: true
             }
         );
@@ -355,7 +368,7 @@ mod tests {
                 Command::Watch {
                     selected: Some(ApplicationId::Identity(value.into())),
                     interactive: false,
-                    capture: false,
+                    capture: None,
                     serve: false,
                 }
             );
@@ -411,6 +424,26 @@ mod tests {
             args(&["--restore-bindings"]).unwrap(),
             Command::RestoreBindings
         );
+    }
+
+    #[test]
+    fn capture_override_distinguishes_absent_enabled_and_disabled() {
+        assert_eq!(
+            args(&["-s", "--no-capture"]).unwrap(),
+            Command::Watch {
+                selected: None,
+                interactive: false,
+                capture: Some(false),
+                serve: true,
+            }
+        );
+        for input in [
+            vec!["-cs", "--no-capture"],
+            vec!["--no-capture", "-c"],
+            vec!["--no-capture", "--no-capture"],
+        ] {
+            assert!(args(&input).is_err());
+        }
     }
 
     #[cfg(unix)]

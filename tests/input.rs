@@ -571,6 +571,16 @@ async fn api_controls_capture_routes_runtime_selection_and_keeps_faults_recovera
     assert!(selected.selected.available);
     let enabled: State = api.call("SetCaptureEnabled", &(true,)).await.unwrap();
     assert_eq!(enabled.capture.status, "enabled");
+    // Clean shutdown restores Cinnamon but retains desired capture and selection.
+    router.signal("-TERM");
+    router.exit(true).await;
+    desktop.restored().await;
+    router = Router::with_args(&desktop, &["--serve"]);
+    router.expect("API READY").await;
+    router.expect("SELECTION AVAILABLE").await;
+    let restored: State = api.call("GetState", &()).await.unwrap();
+    assert_eq!(restored.capture.status, "enabled");
+    assert_eq!(restored.selected.value, "selected");
     desktop.value("play", &["<Control><Alt>p"]).await;
     desktop.tap(desktop.codes[4]);
     router.expect("COMMAND ACKNOWLEDGED: next").await;

@@ -30,13 +30,15 @@ Long options remain supported. These short aliases are also available:
 |---|---|
 | `--interactive` | `-i` |
 | `--capture` | `-c` |
+| `--no-capture` | — |
 | `--serve` | `-s` |
 | `--select DESKTOP_ENTRY` | `-p DESKTOP_ENTRY` |
 | `--select-identity IDENTITY` | `-I IDENTITY` |
 | `--help` | `-h` |
 
 Options are case-sensitive: `-i` enables interactive input, while `-I`
-takes a fallback Identity. `--restore-bindings` remains long-only.
+takes a fallback Identity. `--no-capture` and `--restore-bindings` are long-only.
+`--capture` and `--no-capture` cannot be combined.
 
 Short flags can be grouped. These commands are equivalent:
 
@@ -117,12 +119,12 @@ The first validated matching instance stays active while available. If it
 disappears, another matching instance is chosen by service-name ordering.
 The selection never switches to a different application because one closes.
 
-Selection lasts for the current router process and is not saved to disk.
-Restart the command with another selection argument to change it, or use
-the D-Bus API when running with `--serve`. With no selection argument,
-startup displays players without selecting one. Selection currently
-reports availability; add `--interactive` to send terminal commands or
-`--capture` to route hardware transport keys.
+With `--serve`, selection is saved across router restarts and can be changed
+through the D-Bus API. Explicit selection arguments override and save the
+new selection. Without `--serve`, selection is temporary, saved preferences
+are ignored, and omitting a selection argument leaves nothing selected.
+Add `--interactive` to send terminal commands or `--capture` to route
+hardware transport keys.
 Use `--help` for usage.
 
 ## Sending transport commands
@@ -167,7 +169,8 @@ to finish pending commands and exit when neither `--serve` nor `--capture`
 is enabled, or press Ctrl+C to exit immediately.
 An in-flight command may already have executed when interrupted.
 
-Without `--capture`, terminal commands do not change desktop keybindings.
+In diagnostic runs without `--serve`, omitting `--capture` leaves desktop
+keybindings unchanged. Serving runs also honor saved capture preferences.
 Volume and mute are outside the transport command set.
 
 ## Capturing hardware transport keys
@@ -238,8 +241,10 @@ cargo run --locked -- --serve
 
 `--serve` exposes the session-bus service `org.mediarouter.MediaRouter1`.
 It lets clients read applications and availability, change or clear the
-selection, enable/disable capture, and receive state updates. Capture
-starts disabled unless `--capture` is also supplied. Standard input closing
+selection, enable/disable capture, configure MRO auto-selection, and receive
+state and settings updates. Capture follows its saved preference, which
+defaults to disabled. Use `--capture` or `--no-capture` to override and save
+that preference at startup. Standard input closing
 does not stop a serving daemon. Press Ctrl+C to stop and restore bindings.
 
 For example, use these optional diagnostic commands from another terminal:
@@ -250,9 +255,50 @@ busctl --user call org.mediarouter.MediaRouter1 /org/mediarouter/MediaRouter1 or
 ```
 
 Only one API server can run on a session bus. Snapshots and revision numbers
-remain in RAM; selection and preferences are not yet saved across router
-restarts. See the [D-Bus API reference](docs/DBUS_API.md) for the full
+remain in RAM; selection and preferences are saved across router restarts. See the [D-Bus API reference](docs/DBUS_API.md) for the full
 contract, recovery behavior, client synchronization, and examples.
+
+## Saved preferences and automatic selection
+
+Serving runs use `$XDG_CONFIG_HOME/media-router/config.json`, falling back
+to `~/.config/media-router/config.json`. Empty or relative XDG values are
+ignored. Missing configuration defaults to no selection, capture disabled,
+and automatic selection disabled. Invalid configuration causes serving
+startup to fail with an error; the file is preserved for correction.
+Stop the daemon before editing the file directly.
+
+Selection changes, capture requests, and automatic-selection preferences
+are saved before success is reported. A capture failure does not erase
+the enabled preference: another daemon start will retry capture. Normal
+shutdown restores Cinnamon bindings without disabling that saved preference.
+Use `SetCaptureEnabled(false)` or start with `--serve --no-capture` to save
+capture as disabled. The binding-recovery journal remains separate.
+
+Optional **most-recently-opened (MRO)** selection chooses a newly discovered
+eligible media application. It observes MPRIS availability, not process
+creation: a browser may first appear when a media page opens. Startup
+players do not overwrite the saved selection, even when validation is slow.
+Enabling MRO does not select an already discovered application.
+
+Additional instances of an available application do not trigger MRO.
+Reopening after all its instances disappear can trigger it again. Among
+eligible arrivals, the latest validated arrival wins, and may override a
+manual selection. Clearing selection does not disable MRO. Closing the
+selected application never selects another application automatically.
+Playback changes do not trigger automatic selection.
+
+Enable MRO and optionally exclude applications using their exact typed IDs:
+
+```sh
+busctl --user call org.mediarouter.MediaRouter1 /org/mediarouter/MediaRouter1 org.mediarouter.MediaRouter1 SetAutoSelectNew b true
+busctl --user call org.mediarouter.MediaRouter1 /org/mediarouter/MediaRouter1 org.mediarouter.MediaRouter1 SetAutoSelectExclusions 'a(ss)' 1 desktop-entry firefox
+busctl --user call org.mediarouter.MediaRouter1 /org/mediarouter/MediaRouter1 org.mediarouter.MediaRouter1 GetSettings
+```
+
+The exclusions call replaces the entire list; pass a count of `0` to clear
+it. Excluded applications remain manually selectable. Save failures appear
+as API errors and in `GetSettings().persistence_error`; automatic-selection
+save failures are also logged. See the API reference for retry semantics.
 
 ## Contributing
 

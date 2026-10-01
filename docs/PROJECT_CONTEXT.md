@@ -680,8 +680,9 @@ It provides `GetState`, `SelectApplication`, `ClearSelection`, and
 The daemon owns discovery, selection, routing, and capture. A future tray
 client reads state and sends requests over D-Bus. Snapshot/revision storage
 is in RAM, without history; clients resynchronize when the owner changes.
-Auto-selection settings are being added in Milestone 7 using the approved
-MRO semantics. There are no browser-tab controls in this API.
+Milestone 7 adds GetSettings, SetAutoSelectNew, SetAutoSelectExclusions,
+and SettingsChanged using the approved MRO semantics; existing State wire
+signatures remain unchanged. There are no browser-tab controls in this API.
 
 ------------------------------------------------------------------------
 
@@ -800,7 +801,9 @@ that its changes were committed, pushed, and merged into `main`. The user
 authorized Milestone 7 (persistence/startup) on 2026-10-01, on branch
 `feature/7-startup`. The user approved the original persistence, MRO
 auto-selection, and startup policies, and deferred MRP to a future version.
-Implementation proceeds in reviewable steps, starting with configuration storage. Capture is opt-in,
+Configuration storage and daemon/API persistence with MRO selection are
+implemented and verified. The user committed Step 1 on the current branch
+without merging it. Step 2 awaits review before startup/recovery integration. Capture is opt-in,
 and recovery is available on capture startup or through
 `--restore-bindings`. Routing refreshes relevant capabilities at dispatch
 time. Selection persistence across router restarts remains Milestone 7.
@@ -1420,9 +1423,9 @@ Each step receives isolated verification and a user review checkpoint.
 
 ### Step 1 implemented — configuration storage — 2026-10-01
 
-The configuration foundation is implemented and verified. Milestone 7 is
-still in progress; the daemon does not load or save preferences yet. The
-next review checkpoint is before daemon/API integration and MRO behavior.
+The configuration foundation was implemented and verified at this checkpoint.
+The user subsequently committed Step 1 on the current branch, without
+merging into main, and authorized Step 2. Daemon integration follows below.
 
 - `src/config.rs` defines the version 1 JSON preferences: `version`,
   `selected` (typed logical identity or null), `capture_enabled`,
@@ -1454,6 +1457,71 @@ next review checkpoint is before daemon/API integration and MRO behavior.
 - No dependencies were added. README and the public D-Bus contract are
   unchanged because no new executable behavior is exposed in this step.
   No live preferences, login entries, or Cinnamon settings were changed.
+
+### Step 2 implemented — daemon persistence and MRO — 2026-10-01
+
+The user authorized integration after committing Step 1 on the same branch.
+Step 2 is implemented and verified. Milestone 7 remains in progress; the
+next review checkpoint is before login-startup and recovery integration.
+
+- Serving opens the configuration store and restores logical selection,
+  desired capture state, and MRO preferences. Diagnostic runs remain
+  temporary and ignore configuration. Explicit serving selection/capture
+  flags override and save the corresponding preferences only after gaining
+  the API bus name. Invalid configuration prevents serving startup.
+- CLI capture is now `Option<bool>` so omission differs from an explicit
+  override. `--no-capture` is long-only and conflicts with `--capture`/`-c`.
+  Duplicate forms remain errors. Help explains persistent versus temporary
+  operation. No dependencies were added.
+- Selection/clear, capture intent, MRO enablement, exclusions, and automatic
+  selections are saved before acknowledging success. Save failures before
+  replacement do not apply the requested change. After replacement with an
+  uncertain final sync, visible intent is reflected and PersistenceFailed
+  is still returned; external capture work does not start on a save error.
+- Desired capture remains distinct from actual capture. Failed acquisition,
+  input faults, and clean shutdown do not disable the saved preference.
+  Restarting serving retries enabled capture; disabling through the API or
+  `--serve --no-capture` saves an explicit disabled preference.
+- The additive D-Bus Settings record has signature `(tbba(ss)s)`: independent
+  revision, desired capture, MRO enablement, typed exclusions, and the latest
+  persistence error. GetSettings, SetAutoSelectNew, SetAutoSelectExclusions,
+  and SettingsChanged are implemented. The exclusions setter replaces the
+  list, validates identities, sorts, and deduplicates it. State signatures
+  are unchanged. Both snapshot publishers can coalesce intermediate revisions;
+  clients synchronize them independently. Save errors clear after a
+  successful save and are surfaced for automatic changes as well as requests.
+- `src/player/auto_selection.rs` contains MRO policy. Discovery carries a
+  startup classification and monotonic observation time through validation
+  retries. Existing startup players and candidates observed before MRO is
+  enabled cannot steal selection when validation completes later. Extra
+  instances of an available logical application do not qualify. Reopening
+  after all instances disappear can qualify. Manual selection and clear do
+  not disable MRO; disappearance does not trigger automatic fallback.
+- The first eligible newly admitted application is selected unless excluded;
+  later eligible admissions can supersede it. Exclusions use exact typed
+  identities and do not prevent manual selection. Failed automatic saves are
+  reported without queuing a later replay. No MRP behavior is implemented.
+- README, CLI help, DBUS_API.md, and the interface XML document the executable
+  behavior, settings contract, configuration format, and failure semantics.
+- All 71 tests passed: 29 library units, 12 CLI units, seven API integrations,
+  eight discovery integrations, five input integrations, and ten routing
+  integrations. New coverage includes restart/CLI overrides, saved clear,
+  desired capture retained through faults, settings signals and validation,
+  MRO lifecycle/exclusions, delayed startup and pre-enable admission, failed
+  manual/automatic saves, and malformed configuration versus diagnostics.
+- The isolated X11 test verifies clean shutdown restores Cinnamon while
+  retaining capture intent, and a subsequent serving run resumes capture and
+  selection without CLI overrides. All serving test processes use temporary
+  configuration/state directories and isolated GSettings backends.
+- Clippy across all targets with warnings denied, formatting, and whitespace
+  checks passed. RustRover's build succeeded; inspections of all eight changed
+  or new Rust files reported no warnings or errors. No live desktop settings,
+  preferences, or login entries were changed by automated verification.
+
+Remaining Step 3: opt-in autostart install/remove commands and serving
+startup recovery even when saved capture is disabled. Current recovery is
+still on capture startup, explicit recovery, or retrying a faulted disable.
+No live autostart installation is authorized. The user handles Git updates.
 
 ### Future-version proposal: most-recently-played selection (MRP)
 

@@ -1,4 +1,7 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use futures_util::StreamExt;
 use tokio::task::{AbortHandle, JoinSet};
@@ -17,7 +20,15 @@ pub enum DiscoveryEvent {
     Skipped { service: String, reason: String },
 }
 
+/// Origin of an admission, retained through retries and delayed validation.
+#[derive(Debug, Clone, Copy)]
+pub struct DiscoveryOrigin {
+    pub startup: bool,
+    pub observed_at: Instant,
+}
+
 struct Candidate {
+    origin: DiscoveryOrigin,
     owner: String,
     generation: u64,
     task: AbortHandle,
@@ -43,7 +54,8 @@ impl Inventory {
         connection: &Connection,
         service: &str,
         owner: Option<String>,
-        emit: &mut impl FnMut(DiscoveryEvent),
+        emit: &mut impl FnMut(DiscoveryEvent, DiscoveryOrigin),
+        startup: bool,
     ) {
         if self
             .candidates
@@ -56,7 +68,7 @@ impl Inventory {
         if let Some(previous) = self.candidates.remove(service) {
             previous.task.abort();
             if let Some(player) = previous.player {
-                emit(DiscoveryEvent::Removed(player));
+                emit(DiscoveryEvent::Removed(player), previous.origin);
             }
         }
         if let Some(owner) = owner {
@@ -76,6 +88,10 @@ impl Inventory {
             self.candidates.insert(
                 service.to_owned(),
                 Candidate {
+                    origin: DiscoveryOrigin {
+                        startup,
+                        observed_at: Instant::now(),
+                    },
                     owner,
                     generation,
                     task,
@@ -85,7 +101,11 @@ impl Inventory {
         }
     }
 
-    fn finish(&mut self, result: ProbeResult, emit: &mut impl FnMut(DiscoveryEvent)) {
+    fn finish(
+        &mut self,
+        result: ProbeResult,
+        emit: &mut impl FnMut(DiscoveryEvent, DiscoveryOrigin),
+    ) {
         let Some(candidate) = self.candidates.get_mut(&result.service) else {
             return;
         };
@@ -96,16 +116,19 @@ impl Inventory {
         let reason = match result.outcome {
             Ok(Some(player)) => {
                 candidate.player = Some(player.clone());
-                emit(DiscoveryEvent::Added(player));
+                emit(DiscoveryEvent::Added(player), candidate.origin);
                 return;
             }
             Ok(None) => "CanControl is false".to_owned(),
             Err(error) => error,
         };
-        emit(DiscoveryEvent::Skipped {
-            service: result.service,
-            reason,
-        });
+        emit(
+            DiscoveryEvent::Skipped {
+                service: result.service,
+                reason,
+            },
+            candidate.origin,
+        );
     }
 }
 
@@ -118,6 +141,14 @@ pub async fn watch(
     connection: &Connection,
     mut emit: impl FnMut(DiscoveryEvent),
 ) -> zbus::Result<()> {
+    watch_with_origin(connection, |event, _| emit(event)).await
+}
+
+/// Like watch, with appearance provenance for automatic-selection policy.
+pub async fn watch_with_origin(
+    connection: &Connection,
+    mut emit: impl FnMut(DiscoveryEvent, DiscoveryOrigin),
+) -> zbus::Result<()> {
     let bus = DBusProxy::new(connection).await?;
     // Subscribe first: services may appear while we enumerate the startup snapshot.
     let mut changes = bus.receive_name_owner_changed().await?;
@@ -129,7 +160,7 @@ pub async fn watch(
         .filter(|name| name.as_str().starts_with(PREFIX))
     {
         let owner = current_owner(&bus, name.as_str()).await?;
-        inventory.reconcile(connection, name.as_str(), owner, &mut emit);
+        inventory.reconcile(connection, name.as_str(), owner, &mut emit, true);
     }
 
     loop {
@@ -142,7 +173,7 @@ pub async fn watch(
                     // Reconcile current reality rather than replay stale events queued
                     // during enumeration or rapid owner replacement.
                     let owner = current_owner(&bus, service).await?;
-                    inventory.reconcile(connection, service, owner, &mut emit);
+                    inventory.reconcile(connection, service, owner, &mut emit, false);
                 }
             }
             result = inventory.probes.join_next(), if !inventory.probes.is_empty() => {
@@ -153,7 +184,7 @@ pub async fn watch(
                         {
                             // Never admit a result belonging to a previous owner.
                             let owner = current_owner(&bus, &result.service).await?;
-                            inventory.reconcile(connection, &result.service, owner, &mut emit);
+                            inventory.reconcile(connection, &result.service, owner, &mut emit, false);
                             inventory.finish(result, &mut emit);
                         }
                     }
