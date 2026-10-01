@@ -17,6 +17,20 @@
       <arg name="enabled" type="b" direction="in"/>
       <arg name="state" type="(ta(sssu)(ssbss)(ss))" direction="out"/>
     </method>
+    <method name="GetSettings">
+      <arg name="settings" type="(tbba(ss)s)" direction="out"/>
+    </method>
+    <method name="SetAutoSelectNew">
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="settings" type="(tbba(ss)s)" direction="out"/>
+    </method>
+    <method name="SetAutoSelectExclusions">
+      <arg name="exclusions" type="a(ss)" direction="in"/>
+      <arg name="settings" type="(tbba(ss)s)" direction="out"/>
+    </method>
+    <signal name="SettingsChanged">
+      <arg name="settings" type="(tbba(ss)s)"/>
+    </signal>
     <signal name="StateChanged">
       <arg name="state" type="(ta(sssu)(ssbss)(ss))"/>
     </signal>

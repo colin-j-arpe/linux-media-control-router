@@ -1,10 +1,12 @@
-use std::ffi::OsString;
+use std::{ffi::OsString, path::PathBuf};
 
 use media_router::player::selection::ApplicationId;
 
 pub const HELP: &str =
-    "Usage: media-router [--select DESKTOP_ENTRY | --select-identity IDENTITY] [--interactive] [--capture] [--serve]
+    "Usage: media-router [--select DESKTOP_ENTRY | --select-identity IDENTITY] [--interactive] [--capture | --no-capture] [--serve]
        media-router --restore-bindings
+       media-router --install-autostart /absolute/path/to/media-router
+       media-router --remove-autostart
 
 Watch MPRIS players and report the selected application's availability.
 
@@ -12,20 +14,25 @@ Watch MPRIS players and report the selected application's availability.
   -I, --select-identity NAME    Select by exact Identity when DesktopEntry is absent.
   -i, --interactive             Accept transport commands from standard input.
   -c, --capture                 Capture hardware transport keys on Cinnamon/X11.
+      --no-capture              Disable capture, overriding a saved preference.
   -s, --serve                   Expose the session-bus API; keep running after stdin EOF.
       --restore-bindings        Recover saved Cinnamon bindings and exit.
+      --install-autostart PATH  Install a Cinnamon login entry for this executable.
+      --remove-autostart        Remove the managed personal login entry.
   -h, --help                    Show this help.
 
 Short flags can be grouped: -ics means --interactive --capture --serve.
 Values may follow or attach: -p spotify, -pspotify, -icsp spotify.
 -p and -I consume the rest of their group as a value, or the next argument.
 Attach values beginning with '-' (for example: -I-name). Options are case-sensitive.
-Help and recovery must be used alone. Duplicate options are errors.
+Help, recovery, and autostart commands must be used alone. Duplicate options are errors.
 
-With no selection argument, players are displayed without selecting one.
+With --serve, selection and preferences are loaded and saved across restarts.
+Explicit selection/capture flags override and save those preferences.
+Without --serve, preferences are ignored and selection defaults to none.
 Quote Identity values containing spaces. Matching is exact and case-sensitive.
 Selection is retained while this process runs, including when a player exits
-and returns. It is not saved across router restarts. Press Ctrl+C to stop.
+and returns. Press Ctrl+C to stop.
 Interactive commands: play-pause, stop, previous, next (one per line).
 Without --serve, --interactive, or --capture this command only observes players.
 End terminal input to finish pending commands; serving or capture keeps running.
@@ -36,11 +43,13 @@ pub enum Command {
     Watch {
         selected: Option<ApplicationId>,
         interactive: bool,
-        capture: bool,
+        capture: Option<bool>,
         serve: bool,
     },
     Help,
     RestoreBindings,
+    InstallAutostart(PathBuf),
+    RemoveAutostart,
 }
 
 pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
@@ -57,6 +66,21 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, S
     }
     if arguments == ["--restore-bindings"] {
         return Ok(Command::RestoreBindings);
+    }
+    if arguments == ["--remove-autostart"] {
+        return Ok(Command::RemoveAutostart);
+    }
+    if arguments
+        .first()
+        .is_some_and(|arg| arg == "--install-autostart")
+    {
+        if arguments.len() != 2 || arguments[1].starts_with('-') {
+            return Err(
+                "--install-autostart requires one absolute executable path and must be used alone"
+                    .into(),
+            );
+        }
+        return Ok(Command::InstallAutostart(PathBuf::from(&arguments[1])));
     }
     let mut options = Options::default();
     let mut arguments = arguments.into_iter();
@@ -102,7 +126,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, S
 struct Options {
     selected: Option<ApplicationId>,
     interactive: bool,
-    capture: bool,
+    capture: Option<bool>,
     serve: bool,
 }
 impl Options {
@@ -114,7 +138,17 @@ impl Options {
     ) -> Result<(), String> {
         match option {
             "--interactive" => set_flag(&mut self.interactive, option),
-            "--capture" => set_flag(&mut self.capture, option),
+            "--capture" | "--no-capture" => {
+                if let Some(previous) = self.capture {
+                    return Err(if previous == (option == "--capture") {
+                        format!("duplicate option {option}")
+                    } else {
+                        "--capture/-c conflicts with --no-capture".into()
+                    });
+                }
+                self.capture = Some(option == "--capture");
+                Ok(())
+            }
             "--serve" => set_flag(&mut self.serve, option),
             "--select" | "--select-identity" => {
                 if self.selected.is_some() {
@@ -135,7 +169,9 @@ impl Options {
                 });
                 Ok(())
             }
-            "--help" | "--restore-bindings" => Err(format!("{option} must be used alone")),
+            "--help" | "--restore-bindings" | "--install-autostart" | "--remove-autostart" => {
+                Err(format!("{option} must be used alone"))
+            }
             _ => Err(format!("unexpected argument {option:?}")),
         }
     }
@@ -163,7 +199,7 @@ mod tests {
             Command::Watch {
                 selected: None,
                 interactive: false,
-                capture: false,
+                capture: None,
                 serve: false
             }
         );
@@ -172,7 +208,7 @@ mod tests {
             Command::Watch {
                 selected: Some(ApplicationId::DesktopEntry("spotify".into())),
                 interactive: false,
-                capture: false,
+                capture: None,
                 serve: false
             }
         );
@@ -182,7 +218,7 @@ mod tests {
                 Command::Watch {
                     selected: Some(ApplicationId::Identity(identity.into())),
                     interactive: false,
-                    capture: false,
+                    capture: None,
                     serve: false
                 }
             );
@@ -212,7 +248,7 @@ mod tests {
         let expected = Command::Watch {
             selected: Some(ApplicationId::DesktopEntry("spotify".into())),
             interactive: true,
-            capture: false,
+            capture: None,
             serve: false,
         };
         assert_eq!(
@@ -228,7 +264,7 @@ mod tests {
             Command::Watch {
                 selected: None,
                 interactive: true,
-                capture: false,
+                capture: None,
                 serve: false
             }
         );
@@ -241,7 +277,7 @@ mod tests {
             Command::Watch {
                 selected: None,
                 interactive: false,
-                capture: true,
+                capture: Some(true),
                 serve: false
             }
         );
@@ -273,7 +309,7 @@ mod tests {
             Command::Watch {
                 selected: Some(ApplicationId::DesktopEntry("spotify".into())),
                 interactive: true,
-                capture: true,
+                capture: Some(true),
                 serve: true
             }
         );
@@ -355,7 +391,7 @@ mod tests {
                 Command::Watch {
                     selected: Some(ApplicationId::Identity(value.into())),
                     interactive: false,
-                    capture: false,
+                    capture: None,
                     serve: false,
                 }
             );
@@ -411,6 +447,47 @@ mod tests {
             args(&["--restore-bindings"]).unwrap(),
             Command::RestoreBindings
         );
+    }
+
+    #[test]
+    fn capture_override_distinguishes_absent_enabled_and_disabled() {
+        assert_eq!(
+            args(&["-s", "--no-capture"]).unwrap(),
+            Command::Watch {
+                selected: None,
+                interactive: false,
+                capture: Some(false),
+                serve: true,
+            }
+        );
+        for input in [
+            vec!["-cs", "--no-capture"],
+            vec!["--no-capture", "-c"],
+            vec!["--no-capture", "--no-capture"],
+        ] {
+            assert!(args(&input).is_err());
+        }
+    }
+
+    #[test]
+    fn autostart_commands_are_explicit_and_standalone() {
+        assert_eq!(
+            args(&["--install-autostart", "/opt/My App/media-router"]).unwrap(),
+            Command::InstallAutostart(PathBuf::from("/opt/My App/media-router"))
+        );
+        assert_eq!(
+            args(&["--remove-autostart"]).unwrap(),
+            Command::RemoveAutostart
+        );
+        for values in [
+            vec!["--install-autostart"],
+            vec!["--install-autostart", "--serve"],
+            vec!["--install-autostart", "/bin/router", "-s"],
+            vec!["-s", "--install-autostart", "/bin/router"],
+            vec!["--remove-autostart", "-s"],
+        ] {
+            assert!(args(&values).is_err());
+        }
     }
 
     #[cfg(unix)]

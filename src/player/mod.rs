@@ -1,3 +1,4 @@
+pub mod auto_selection;
 pub mod discovery;
 mod mpris;
 pub mod routing;

@@ -535,9 +535,12 @@ unavailable-state indicator is fixed**.
 
 # Auto-Selection
 
-Planned user preference:
+Approved v1 preference:
 
--   optionally auto-select a newly opened media application.
+-   optionally auto-select a newly opened media application (MRO).
+
+Most-recently-played selection (MRP) is deferred to a future version; see
+the proposal below. It is not part of Milestone 7 or the v1 settings schema.
 
 A related desired setting was originally described as excluding new
 browser tabs from auto-selection. Because standard Firefox MPRIS does
@@ -552,7 +555,8 @@ Important settled rule:
 **The disappearance of the currently selected application does not
 itself trigger selection of another application.**
 
-Detailed auto-selection precedence/rules remain to be specified.
+Approved MRO precedence and exclusions are recorded in the Milestone 7
+policies below.
 
 ------------------------------------------------------------------------
 
@@ -676,8 +680,9 @@ It provides `GetState`, `SelectApplication`, `ClearSelection`, and
 The daemon owns discovery, selection, routing, and capture. A future tray
 client reads state and sends requests over D-Bus. Snapshot/revision storage
 is in RAM, without history; clients resynchronize when the owner changes.
-Auto-selection settings remain deferred to Milestone 7 with user-approved
-semantics still needed. There are no browser-tab controls in this API.
+Milestone 7 adds GetSettings, SetAutoSelectNew, SetAutoSelectExclusions,
+and SettingsChanged using the approved MRO semantics; existing State wire
+signatures remain unchanged. There are no browser-tab controls in this API.
 
 ------------------------------------------------------------------------
 
@@ -792,11 +797,18 @@ Milestone 6 is complete; the user confirmed that CLI service commands
 function as expected. The user committed, pushed, and merged Milestone 6
 into `main`, then authorized Milestone 6.1 for CLI abbreviations on
 `feature/6.1-cli-switches`. Milestone 6.1 is complete; the user confirmed
-that its changes were committed, pushed, and merged into `main`. Obtain
-user approval before Milestone 7 (persistence/startup). Capture is opt-in,
-and recovery is available on capture startup or through
-`--restore-bindings`. Routing refreshes relevant capabilities at dispatch
-time. Selection persistence across router restarts remains Milestone 7.
+that its changes were committed, pushed, and merged into `main`. The user
+authorized Milestone 7 (persistence/startup) on 2026-10-01, on branch
+`feature/7-startup`. The user approved the original persistence, MRO
+auto-selection, and startup policies, and deferred MRP to a future version.
+Milestone 7 implementation and isolated automated verification are complete:
+configuration storage, daemon/API persistence, MRO selection, opt-in login
+startup commands, and recovery on serving startup even with capture disabled.
+The user confirmed that all three implementation steps are committed;
+merging to main has not been reported. The user will test installation after
+the system-tray interface is complete. No live autostart installation or
+actual login check has been performed. MRP remains a documented future proposal.
+Milestone 8 (tray client) requires a new user approval.
 
 Before adding dependencies, verify current Rust crate choices and
 versions rather than relying on old examples.
@@ -1323,6 +1335,335 @@ errors or warnings. No live desktop settings were changed. The user confirmed
 that the changes were committed, pushed, and merged into `main` separately
 from Milestone 7. Milestone 7 is not authorized.
 
+## Milestone 7 started — 2026-10-01
+
+The user authorized this milestone after updating main and creating
+`feature/7-startup`. The working tree was clean. Current startup, capture,
+selection, discovery, and D-Bus API paths were reviewed. The user approved
+the original policies after deferring MRP on 2026-10-01. No live login
+configuration changes have been requested.
+
+### Approved policies
+
+1. Durable configuration:
+   - Store versioned JSON in `$XDG_CONFIG_HOME/media-router/config.json`,
+     falling back to `~/.config/media-router/config.json`. Reuse Serde/JSON.
+   - Persist the selected logical identity (including no selection), desired
+     capture enablement, MRO auto-selection enablement, and an explicit list
+     of application identities excluded from MRO auto-selection.
+   - Do not persist snapshots, revisions, inventories, service names, or
+     unique bus owners. Keep the existing recovery journal in XDG state.
+   - Use a single-writer lock, synced temporary file, rename, and directory
+     sync. Missing configuration means defaults: no selection, capture off,
+     auto-selection off, and no exclusions. Malformed/unsupported files are
+     reported and preserved, never silently overwritten with defaults.
+   - Successful preference changes must be durably recorded. Save failures
+     are explicit API errors. Capture is an external side effect, so its
+     requested preference and actual/faulted state must remain distinct;
+     never claim that disk writes and desktop changes are one transaction.
+
+2. Persistent versus diagnostic execution:
+   - `--serve` loads and saves preferences. Non-serving CLI runs retain their
+     temporary behavior and do not read or write these preferences.
+   - Explicit serving startup selection/capture flags override saved values
+     and become the new saved preferences. Add `--no-capture` for an explicit
+     startup override to off; reject combining it with `--capture`/`-c`.
+   - API selection/clear and capture requests update saved intent. Capture
+     faults, normal shutdown, and temporary player absence do not erase that
+     intent. Auto-selection changes, when enabled, also save the new identity.
+   - Extend version 1 with separate settings methods/signals; preserve existing
+     GetState/StateChanged wire signatures and keep actual capture state there.
+
+3. Auto-selection:
+   - Default off. When enabled, a logical application's transition from no
+     validated instances to its first validated instance after the startup
+     inventory is eligible to become selected. Already-running startup
+     applications do not replace the restored selection, even if validation
+     completes later. Enabling auto-selection does not retroactively choose
+     an existing application. Additional instances of an available application
+     do not trigger it; reopening after all instances disappear does.
+   - Among eligible arrivals, the latest validation/admission event wins.
+     Manual selection takes effect immediately but can be superseded by a
+     later eligible arrival while auto-selection remains enabled. Clearing
+     selection does not disable auto-selection. Player disappearance alone
+     still never selects another application.
+   - Use exact per-application exclusions rather than inferring browser
+     identity. Users can exclude Firefox or any other application using its
+     typed identity; excluded applications remain manually selectable.
+     Exclusions default to empty. This replaces the conceptual browser toggle
+     with an explicit, general policy.
+   - Browser tab changes within an existing MPRIS instance do not trigger
+     auto-selection. MPRIS appearance is the event the router can observe;
+     it does not prove a browser process was just launched.
+
+4. Login startup and recovery:
+   - Provide opt-in install/remove commands for a per-user XDG autostart
+     entry, normally `~/.config/autostart/media-router.desktop`. Target an
+     installed executable by absolute path, with `--serve`, and restrict
+     automatic startup to Cinnamon. The capture backend still checks X11.
+   - Implement and test installation using temporary directories first.
+     Enabling startup in the user's actual session is a separate explicit
+     action; no live installation has been requested yet.
+   - Before a serving daemon applies saved capture intent, recover an
+     outstanding journal, including when the saved preference is capture off.
+     Respect the capture lock and never recover settings owned by an active
+     capturing process. Recovery failure is exposed as a fault through the
+     API and retains recovery data.
+   - Preserve clean signal shutdown and manual recovery. Retain the approved
+     next-start/manual crash recovery policy; no watchdog or immediate crash
+     restart is proposed for this milestone.
+
+Primary references checked: XDG Base Directory Specification
+(`https://specifications.freedesktop.org/basedir/latest/`) and Desktop
+Application Autostart Specification
+(`https://specifications.freedesktop.org/autostart/latest/`). Installed
+Cinnamon autostart entries use `OnlyShowIn=X-Cinnamon;`.
+
+Implementation proceeds incrementally: configuration storage, daemon
+persistence/settings and MRO selection, then startup/recovery integration.
+Each step receives isolated verification and a user review checkpoint.
+
+### Step 1 implemented — configuration storage — 2026-10-01
+
+The configuration foundation was implemented and verified at this checkpoint.
+The user subsequently committed Step 1 on the current branch, without
+merging into main, and authorized Step 2. Daemon integration follows below.
+
+- `src/config.rs` defines the version 1 JSON preferences: `version`,
+  `selected` (typed logical identity or null), `capture_enabled`,
+  `auto_select_new`, and `exclusions`. There are no MRP fields. Application
+  identities serialize as objects with `kind` and exact `value`; an empty
+  fallback Identity is valid, while an empty desktop-entry identifier is not.
+- Configuration resolves under the absolute XDG configuration home, falling
+  back to the absolute HOME plus `.config`. Relative/empty XDG values are
+  ignored. Path handling supports non-Unicode filesystem paths.
+- `Store` holds a separate `config.lock` file for its lifetime. Missing
+  configuration yields defaults without creating `config.json`; malformed,
+  unknown-field, and unsupported-version configuration is preserved and
+  reported as an error. No migration is needed for the first format version.
+- Saves validate first, write and sync a private temporary file, rename it,
+  then sync the directory. Newly created directories and files use modes
+  0700 and 0600 respectively. Incomplete temporary files are not loaded.
+- Save errors distinguish failure before replacement from an uncertain
+  durability result after replacement. In the latter case the store's
+  in-memory preferences reflect the visible new file, and the caller must
+  still report failure. A retry performs a full save even for equal values.
+- Eight new unit tests cover defaults, exact identity round trips and clear
+  selection, invalid-file preservation, writer exclusion, interrupted-save
+  remnants, failures before replacement, uncertain final directory sync,
+  permissions, and XDG path resolution. Tests use temporary directories.
+- All 27 library tests passed, as did Clippy across all targets with warnings
+  denied, formatting, and whitespace checks. RustRover's build succeeded;
+  inspections of all three changed/new Rust files reported no problems.
+  Integration tests were not rerun for this unconnected storage module.
+- No dependencies were added. README and the public D-Bus contract are
+  unchanged because no new executable behavior is exposed in this step.
+  No live preferences, login entries, or Cinnamon settings were changed.
+
+### Step 2 implemented — daemon persistence and MRO — 2026-10-01
+
+The user authorized integration after committing Step 1 on the same branch.
+Step 2 was implemented and verified at this checkpoint. The user then
+committed it on the current branch without merging and authorized Step 3.
+
+- Serving opens the configuration store and restores logical selection,
+  desired capture state, and MRO preferences. Diagnostic runs remain
+  temporary and ignore configuration. Explicit serving selection/capture
+  flags override and save the corresponding preferences only after gaining
+  the API bus name. Invalid configuration prevents serving startup.
+- CLI capture is now `Option<bool>` so omission differs from an explicit
+  override. `--no-capture` is long-only and conflicts with `--capture`/`-c`.
+  Duplicate forms remain errors. Help explains persistent versus temporary
+  operation. No dependencies were added.
+- Selection/clear, capture intent, MRO enablement, exclusions, and automatic
+  selections are saved before acknowledging success. Save failures before
+  replacement do not apply the requested change. After replacement with an
+  uncertain final sync, visible intent is reflected and PersistenceFailed
+  is still returned; external capture work does not start on a save error.
+- Desired capture remains distinct from actual capture. Failed acquisition,
+  input faults, and clean shutdown do not disable the saved preference.
+  Restarting serving retries enabled capture; disabling through the API or
+  `--serve --no-capture` saves an explicit disabled preference.
+- The additive D-Bus Settings record has signature `(tbba(ss)s)`: independent
+  revision, desired capture, MRO enablement, typed exclusions, and the latest
+  persistence error. GetSettings, SetAutoSelectNew, SetAutoSelectExclusions,
+  and SettingsChanged are implemented. The exclusions setter replaces the
+  list, validates identities, sorts, and deduplicates it. State signatures
+  are unchanged. Both snapshot publishers can coalesce intermediate revisions;
+  clients synchronize them independently. Save errors clear after a
+  successful save and are surfaced for automatic changes as well as requests.
+- `src/player/auto_selection.rs` contains MRO policy. Discovery carries a
+  startup classification and monotonic observation time through validation
+  retries. Existing startup players and candidates observed before MRO is
+  enabled cannot steal selection when validation completes later. Extra
+  instances of an available logical application do not qualify. Reopening
+  after all instances disappear can qualify. Manual selection and clear do
+  not disable MRO; disappearance does not trigger automatic fallback.
+- The first eligible newly admitted application is selected unless excluded;
+  later eligible admissions can supersede it. Exclusions use exact typed
+  identities and do not prevent manual selection. Failed automatic saves are
+  reported without queuing a later replay. No MRP behavior is implemented.
+- README, CLI help, DBUS_API.md, and the interface XML document the executable
+  behavior, settings contract, configuration format, and failure semantics.
+- All 71 tests passed: 29 library units, 12 CLI units, seven API integrations,
+  eight discovery integrations, five input integrations, and ten routing
+  integrations. New coverage includes restart/CLI overrides, saved clear,
+  desired capture retained through faults, settings signals and validation,
+  MRO lifecycle/exclusions, delayed startup and pre-enable admission, failed
+  manual/automatic saves, and malformed configuration versus diagnostics.
+- The isolated X11 test verifies clean shutdown restores Cinnamon while
+  retaining capture intent, and a subsequent serving run resumes capture and
+  selection without CLI overrides. All serving test processes use temporary
+  configuration/state directories and isolated GSettings backends.
+- Clippy across all targets with warnings denied, formatting, and whitespace
+  checks passed. RustRover's build succeeded; inspections of all eight changed
+  or new Rust files reported no warnings or errors. No live desktop settings,
+  preferences, or login entries were changed by automated verification.
+
+### Step 3 implemented — login startup and recovery — 2026-10-01
+
+The user authorized Step 3 after committing Step 2 without merging to main.
+Milestone 7 implementation and automated verification are complete. The
+user's actual login session has not been modified or used for a login test.
+The user subsequently confirmed Step 3 is committed and deferred installation
+testing until the system-tray interface is complete. This manual check remains
+outstanding; it is not a prerequisite for implementing the tray interface.
+
+- Add standalone long-only CLI commands `--install-autostart PATH` and
+  `--remove-autostart`. Installation takes the explicitly chosen installed
+  executable's absolute UTF-8 path and verifies it is an executable file.
+  It never launches that executable. Invalid targets fail before creating
+  startup files. Paths containing control characters or `=` are rejected.
+- `src/autostart.rs` manages the personal XDG entry, normally
+  `~/.config/autostart/media-router.desktop`. Exec invokes the chosen path
+  with `--serve`; TryExec names the same file. OnlyShowIn is `X-Cinnamon;`,
+  and Terminal is false. Capture still enforces Cinnamon/X11 at runtime.
+- Exec arguments are quoted using Desktop Entry rules, including literal
+  percent signs, with GLib KeyFile handling the additional string-escaping
+  layer. No shell is invoked. Existing GLib/GIO is reused; no new dependencies.
+- A held lock serializes autostart changes. Installation writes a synced
+  temporary file, renames, and syncs the directory. Removal syncs the
+  directory and reports post-removal sync failures explicitly. Files carry
+  `X-MediaRouter-Managed=true`; unrecognized entries and symlink entries are
+  preserved and reported. Reinstall updates a managed entry; removing an
+  absent entry succeeds without creating an autostart directory. Removing
+  an entry does not stop a running daemon or erase saved preferences.
+- After acquiring the API bus name and recording any explicit CLI overrides,
+  serving checks for an outstanding binding journal before applying capture
+  intent. With no journal, recovery needs no Cinnamon schema or settings
+  access. With a journal, it uses the existing settings lease and lock and
+  can restore without X, including when capture is disabled.
+- Recovery failure keeps the API/discovery available, publishes a capture
+  fault, retains recovery data and desired capture intent, and skips capture
+  startup. Retrying SetCaptureEnabled(false) runs recovery after the cause
+  is addressed. Active capture locks prevent stealing another process's
+  settings. Existing clean shutdown and manual recovery remain unchanged;
+  no watchdog or immediate crash restart was added.
+- README and CLI help document installation/removal and recovery. The D-Bus
+  reference explains startup faults and retry semantics. The interface wire
+  format is unchanged in this step.
+- All 81 tests passed: 34 library units, 13 CLI units, seven API integrations,
+  one autostart CLI integration, eight discovery integrations, eight input
+  integrations, and ten routing integrations. New tests cover quoting,
+  managed-entry replacement/removal, invalid targets, locks, failed writes,
+  symlink preservation, XDG/HOME resolution, standalone CLI commands,
+  disabled-capture recovery without X, malformed startup recovery with API
+  retry, and respecting a live capturer's lock.
+- A generated entry in a temporary directory passed desktop-file-validate.
+  All startup files and settings used by tests were isolated. Installation
+  in the user's actual session remains a separate explicit action.
+- `src/filesystem.rs` holds shared private-directory creation, stale-file
+  removal, and temporary-file cleanup helpers used by configuration,
+  autostart, and journal storage. This removes duplicated file-handling
+  fragments identified by RustRover without changing the save ordering.
+- After that extraction, all 81 tests passed again. Clippy with warnings
+  denied, formatting, and whitespace checks passed. RustRover's build
+  succeeded and inspections of all ten changed/new Rust files were clean.
+
+References checked: XDG Autostart Specification and Desktop Entry Exec/value
+escaping rules at `https://specifications.freedesktop.org/autostart/latest/`,
+`https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html`,
+and `https://specifications.freedesktop.org/desktop-entry/latest/value-types.html`.
+
+### Future-version proposal: most-recently-played selection (MRP)
+
+Deferred by the user on 2026-10-01 because standard MPRIS cannot reliably
+separate autoplay from an explicit user Play action. Do not implement an
+MRP toggle, settings fields, playback-driven selection, or an exception to
+sticky instance selection in Milestone 7. Revisit only with user approval
+and a satisfactory way to address playback provenance (potentially a later
+application/browser integration layer).
+
+The original request was for independent MRO and MRP toggles, usable alone
+or together. Example: opening a browser selects it through MRO; opening
+Spotify selects Spotify; navigating to YouTube leaves Spotify selected;
+starting Spotify playback keeps Spotify selected; starting YouTube while
+Spotify is still playing selects the browser through MRP; pausing Spotify
+does not change selection. Only Play should trigger MRP, not Pause or other
+media-control commands.
+
+The following feasibility details and suggested semantics are retained as
+an **unapproved future proposal**, not requirements for the current version:
+
+- MRO and MRP are independent toggles, both defaulting to off.
+- MRO: a logical application's transition from no
+  validated instances to its first validated instance after the startup
+  inventory is eligible to become selected. Already-running startup
+  applications do not replace the restored selection, even if validation
+  completes later. Enabling either mode does not retroactively choose
+  an existing application. Additional instances of an available application
+  do not trigger MRO; reopening after all instances disappear does.
+- MRP: observe each validated instance's PlaybackStatus transitions from
+  Paused or Stopped to Playing. Duplicate Playing notifications, transitions
+  to Paused/Stopped, and metadata-only changes do not qualify. This detects
+  playback starting/resuming, not the literal Play command or its cause;
+  autoplay can also qualify. A Play action while already Playing is not
+  detectable through a status transition. Do not infer playback from
+  metadata, seek, volume, or command acknowledgements.
+- Baseline startup players' current status without selecting them. Recommend
+  counting a newly appearing instance already Playing after startup as an
+  MRP event, so playback begun before admission is not missed. This is an
+  observation-time approximation, not proof of the actual playback order.
+  Instances present when MRP is enabled are baselined without selection.
+- When both modes are enabled, the latest eligible event processed by the
+  router wins; neither mode has permanent priority. MRP does not require
+  other applications to stop playing. Pause, Stop, and disappearance never
+  cause automatic fallback to another playing application.
+  Manual selection takes effect immediately but can be superseded by a
+  later eligible event while the relevant mode remains enabled. Clearing
+  selection does not disable auto-selection. Player disappearance alone
+  still never selects another application.
+- Recommend exact per-application, per-mode exclusions rather than inferring browser
+  identity. Users can exclude Firefox or any other application using its
+  typed identity; excluded applications remain manually selectable.
+  Separate lists allow excluding a browser from MRO while allowing MRP.
+  Exclusions default to empty. This replaces the conceptual browser toggle
+  with an explicit, general policy and requires user approval.
+- Browser tab changes within an existing MPRIS instance do not trigger
+  MRO. They can trigger MRP if exposed as a qualifying playback transition.
+  MPRIS appearance does not prove a process was just launched: a browser
+  first exposing a player when a page loads can trigger MRO then. A new tab
+  starting while the shared player remains Playing cannot be distinguished
+  using PlaybackStatus alone. Per-tab routing remains outside scope.
+- Recommend a narrow exception to sticky instance selection: an eligible
+  MRP event selects the instance that started playing, including a second
+  instance of the already-selected logical application. Persist only the
+  logical identity; instance targeting remains in memory. Existing sticky
+  instance behavior otherwise remains unchanged. This requires approval.
+- Implementation requires live PropertiesChanged subscriptions, validated
+  against the current owner, with duplicate suppression and safe initial
+  baselining. Track current playback status per instance in RAM, without a
+  playback history or persisted playback timestamps. Tests should cover the
+  user's combined-mode sequence, startup, exclusions, repeated status,
+  multiple instances, and stale-owner events.
+
+The MRP feasibility review checked the MPRIS Player specification
+(`https://specifications.freedesktop.org/mpris/latest/Player_Interface.html`):
+PlaybackStatus changes emit PropertiesChanged; the interface provides no
+general notification identifying an explicit user Play command. Autoplay
+can cause the same transition, so the proposed status-based approximation
+was not accepted for the current version.
+
 ## License decision — 2026-09-26
 
 The user selected Apache License 2.0 for the project. The full, unmodified
@@ -1340,7 +1681,12 @@ the original license text and should remain unchanged.
 - Proceed incrementally, with user approval before each new milestone.
   Milestones 1 through 6 are complete, including the user-confirmed
   physical-key and CLI service-command checks. Milestone 6.1 is complete
-  and merged into `main`. Milestone 7 has not been authorized.
+  and merged into `main`. Milestone 7 is authorized with its original
+  persistence, MRO auto-selection, and startup policies approved. MRP is
+  deferred to a future version. Milestone 7 implementation and automated
+  verification are complete and all three steps are committed. The user has
+  deferred installation testing until the system-tray interface is complete;
+  actual login startup has not been tested. Milestone 8 is not authorized.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.

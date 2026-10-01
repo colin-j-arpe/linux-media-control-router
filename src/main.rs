@@ -8,12 +8,14 @@ use tokio::{
 };
 
 use media_router::{
-    dbus_api::{self, CaptureState, Operation, Server, State},
+    config::{self, Preferences, Store},
+    dbus_api::{self, CaptureState, Operation, Response, Server, Settings, State},
     input::Capture,
 };
 
 use media_router::player::{
     Player,
+    auto_selection::AutoSelection,
     discovery::{self, DiscoveryEvent},
     routing::{self, RouteOutcome, SkipReason, TransportAction},
     selection::{ApplicationId, Selection, SelectionState},
@@ -48,6 +50,41 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Ok(cli::Command::InstallAutostart(executable)) => {
+            match media_router::autostart::directory()
+                .and_then(|directory| media_router::autostart::install(&directory, &executable))
+            {
+                Ok(path) => {
+                    println!("Autostart installed: {}", path.display());
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("media-router: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Ok(cli::Command::RemoveAutostart) => {
+            match media_router::autostart::directory()
+                .and_then(|directory| media_router::autostart::remove(&directory))
+            {
+                Ok(removed) => {
+                    println!(
+                        "{}",
+                        if removed {
+                            "Autostart entry removed. The running daemon is unchanged."
+                        } else {
+                            "No personal autostart entry is installed."
+                        }
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("media-router: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Err(error) => {
             eprintln!("media-router: {error}\nRun media-router --help for usage.");
             ExitCode::from(2)
@@ -58,7 +95,7 @@ async fn main() -> ExitCode {
 async fn watch(
     selected: Option<ApplicationId>,
     interactive: bool,
-    capture_enabled: bool,
+    capture_override: Option<bool>,
     serve: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Register before announcing readiness, including when stdin is idle.
@@ -70,18 +107,54 @@ async fn watch(
         .build()
         .await?;
 
+    let mut store = if serve {
+        Some(Store::open(config::directory()?)?)
+    } else {
+        None
+    };
+    let mut preferences = store
+        .as_ref()
+        .map(|store| store.preferences().clone())
+        .unwrap_or_default();
+    let explicit_selection = selected.is_some();
+    if let Some(selected) = selected {
+        preferences.selected = Some(selected);
+    }
+    if let Some(enabled) = capture_override {
+        preferences.capture_enabled = enabled;
+    }
     let mut selection = Selection::default();
-    selection.select(selected);
+    selection.select(preferences.selected.clone());
+    let mut auto_selection = AutoSelection::default();
+    auto_selection.set_enabled(serve && preferences.auto_select_new);
     let mut capture_state = CaptureState::default();
     let mut capture = None;
     let (mut server, mut requests) = if serve {
-        let (server, requests) =
-            Server::start(&connection, State::snapshot(&selection, &capture_state)).await?;
+        let (server, requests) = Server::start(
+            &connection,
+            State::snapshot(&selection, &capture_state),
+            Settings::snapshot(&preferences, String::new()),
+        )
+        .await?;
         (Some(server), requests)
     } else {
         (None, mpsc::channel(1).1)
     };
-    if capture_enabled {
+    // Own the bus name before persisting CLI overrides or touching capture.
+    if let Some(store) = store.as_mut()
+        && (explicit_selection || capture_override.is_some())
+    {
+        store.save(preferences.clone())?;
+    }
+    if serve && let Err(error) = media_router::input::recover_pending_bindings() {
+        capture_state = CaptureState {
+            status: "faulted".into(),
+            error: error.to_string(),
+        };
+        publish(&server, &selection, &capture_state);
+        eprintln!("CAPTURE FAULT: startup binding recovery failed: {error}");
+    }
+    if preferences.capture_enabled && capture_state.status != "faulted" {
         capture_state.status = "starting".into();
         publish(&server, &selection, &capture_state);
         let result = change_capture(&mut capture, &mut capture_state, true).await;
@@ -101,8 +174,8 @@ async fn watch(
     print_selection(selection.state());
     let (state_sender, state_receiver) = watch::channel(selection.state());
     let (event_sender, mut events) = mpsc::unbounded_channel();
-    let discovery = discovery::watch(&connection, |event| {
-        let _ = event_sender.send(event);
+    let discovery = discovery::watch_with_origin(&connection, |event, origin| {
+        let _ = event_sender.send((event, origin));
     });
     tokio::pin!(discovery);
     let mut input = terminal_input(interactive);
@@ -146,14 +219,24 @@ async fn watch(
                 }
                 Some(request) = requests.recv(), if serve => {
                     if request.reply.is_closed() { continue; }
-                    let result = match request.operation {
-                        Operation::Select(application) => {
-                            selection.select(application);
-                            state_sender.send_replace(selection.state());
-                            print_selection(selection.state());
-                            Ok(())
-                        }
-                        Operation::Capture(enabled) => {
+                    let store = store.as_mut().expect("serving configuration");
+                    let service = server.as_ref().expect("serving");
+                    let mut next = store.preferences().clone();
+                    match &request.operation {
+                        Operation::Select(application) => next.selected = application.clone(),
+                        Operation::Capture(enabled) => next.capture_enabled = *enabled,
+                        Operation::AutoSelectNew(enabled) => next.auto_select_new = *enabled,
+                        Operation::Exclusions(exclusions) => next.exclusions = exclusions.clone(),
+                    }
+                    let saved = save_preferences(store, service, next);
+                    // After an uncertain final sync, reflect the visible replacement
+                    // but still return an error; do not start external capture work.
+                    selection.select(store.preferences().selected.clone());
+                    auto_selection.set_enabled(store.preferences().auto_select_new);
+                    state_sender.send_replace(selection.state());
+                    let result = match (saved, request.operation) {
+                        (Err(error), _) => Err(error),
+                        (Ok(()), Operation::Capture(enabled)) => {
                             if enabled && capture_state.status != "enabled" {
                                 capture_state.status = "starting".into();
                                 capture_state.error.clear();
@@ -162,15 +245,32 @@ async fn watch(
                             change_capture(&mut capture, &mut capture_state, enabled).await
                                 .map_err(dbus_api::Error::CaptureFailed)
                         }
+                        (Ok(()), _) => Ok(()),
                     };
+                    print_selection(selection.state());
                     let snapshot = publish(&server, &selection, &capture_state);
-                    let _ = request.reply.send(result.map(|()| snapshot));
+                    let settings = service.settings();
+                    let _ = request.reply.send(result.map(|()| Response { state: snapshot, settings }));
                 }
-                Some(event) = events.recv() => {
+                Some((event, origin)) = events.recv() => {
                     print_event(&event);
-                    if let Some(state) = selection.apply_event(&event) {
-                        state_sender.send_replace(state.clone());
-                        print_selection(state);
+                    let candidate = store.as_ref().and_then(|store|
+                        auto_selection.candidate(&selection, store.preferences(), &event, origin));
+                    let before = selection.state();
+                    selection.apply_event(&event);
+                    if let Some(application) = candidate {
+                        let store = store.as_mut().expect("automatic selection only while serving");
+                        let mut next = store.preferences().clone();
+                        next.selected = Some(application);
+                        if let Err(error) = save_preferences(store, server.as_ref().expect("serving"), next) {
+                            eprintln!("AUTO-SELECTION SAVE FAILED: {error}");
+                        }
+                        selection.select(store.preferences().selected.clone());
+                    }
+                    let after = selection.state();
+                    if before != after {
+                        state_sender.send_replace(after.clone());
+                        print_selection(after);
                     }
                     publish(&server, &selection, &capture_state);
                 }
@@ -219,6 +319,21 @@ async fn watch(
         capture.stop()?;
     }
     result
+}
+
+fn save_preferences(
+    store: &mut Store,
+    server: &Server,
+    next: Preferences,
+) -> Result<(), dbus_api::Error> {
+    let result = store.save(next);
+    let error = result
+        .as_ref()
+        .err()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    server.publish_settings(Settings::snapshot(store.preferences(), error));
+    result.map_err(|error| dbus_api::Error::PersistenceFailed(error.to_string()))
 }
 
 fn publish(server: &Option<Server>, selection: &Selection, capture: &CaptureState) -> State {

@@ -6,12 +6,13 @@ Start the service with `media-router --serve` (or `media-router -s`). It uses th
 - Object path: `/org/mediarouter/MediaRouter1`
 - Machine-readable contract: [interface XML](org.mediarouter.MediaRouter1.xml)
 
-`--serve` can be combined with `--select`, `--select-identity`, `--capture`,
+`--serve` can be combined with `--select`, `--select-identity`, `--capture`/`--no-capture`,
 and `--interactive`. Serving continues after terminal input ends. Only one
 server can own this bus name. A second server fails before changing capture
 settings and does not replace or queue behind the current server. Diagnostic
 runs without `--serve` remain available. Capture additionally uses its
-existing per-state-directory lock.
+existing per-state-directory lock. Serving also holds a configuration writer
+lock, preventing two daemons on different buses from overwriting the same file.
 
 ## Methods and signals
 
@@ -22,6 +23,10 @@ existing per-state-directory lock.
 | `ClearSelection` | None | Applied `State` |
 | `SetCaptureEnabled` | `enabled: b` | Applied `State` |
 | `StateChanged` (signal) | — | Complete `State` |
+| `GetSettings` | None | `Settings` |
+| `SetAutoSelectNew` | `enabled: b` | Applied `Settings` |
+| `SetAutoSelectExclusions` | `exclusions: a(ss)` | Applied `Settings` |
+| `SettingsChanged` (signal) | — | Complete `Settings` |
 
 All records below have fixed field order. D-Bus `s`, `b`, `u`, and `t`
 mean string, boolean, unsigned 32-bit integer, and unsigned 64-bit integer.
@@ -79,10 +84,20 @@ request, not merely its acceptance into a queue. Repeating an unchanged
 selection, clearing an already empty selection, or setting capture to its
 current healthy state does not increment the revision.
 
-Capture remains opt-in at startup. Enabling uses the same settings journal
+Capture defaults to off and follows saved intent on serving startup.
+Explicit `--capture`/`--no-capture` override and save that intent.
+Enabling uses the same settings journal
 as CLI capture and may take about two seconds while Cinnamon releases grabs.
 Disabling releases grabs and restores prior settings, preserving external
 edits. It retains the application selection.
+
+Before applying saved capture intent at serving startup, the daemon recovers
+any outstanding binding journal, even when capture is disabled. No journal
+means no Cinnamon settings access is needed for that recovery check. Recovery
+requires the capture lock and does not need X. A recovery failure publishes
+`faulted`, retains the journal and desired preference, and prevents capture
+startup. The API remains available; `SetCaptureEnabled(false)` retries
+recovery after the cause is addressed. A live capturer's lock is never stolen.
 
 While serving, input-backend failure stops capture and publishes a fault;
 discovery and the API remain available. A startup `--capture` failure also
@@ -106,16 +121,88 @@ Error names under `org.mediarouter.MediaRouter1.Error`:
 | `Busy` | Mutation request queue is full |
 | `Unavailable` | Router is stopping or stopped before replying |
 | `CaptureFailed` | Capture acquisition or restoration failed; read current state |
+| `PersistenceFailed` | Saving preferences failed; read state and settings before retrying |
 
 Standard D-Bus errors also apply for malformed calls, absent service, or
 unknown members. Error text is diagnostic, not a stable machine-readable
-identifier. There are no transport invocation methods or auto-selection
-setters in version 1. Auto-selection and disk-backed preferences are not
-implemented.
+identifier. There are no transport invocation methods in this API.
+
+## Settings and persistence
+
+The existing `State` wire signature is unchanged. The additive `Settings`
+record has signature `(tbba(ss)s)` and these ordered fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| revision | `t` | Independent settings revision within this service instance |
+| capture_enabled | `b` | Saved capture intent, even when actual capture is faulted |
+| auto_select_new | `b` | MRO auto-selection enabled |
+| exclusions | `a(ss)` | Exact `(kind, value)` identities excluded from MRO |
+| persistence_error | `s` | Last save failure, or empty after a successful save |
+
+`SetAutoSelectExclusions` replaces the complete list. Identity validation is
+the same as for selection; empty fallback identities are valid. The setter
+sorts by kind/value and removes duplicates. Excluded players remain eligible
+for manual selection. Repeating unchanged settings does not advance their
+revision unless it clears an earlier save error. Both setters return the
+applied `Settings` snapshot after saving.
+
+MRO selects a logical application's first validated instance when it appears
+after the startup inventory. Startup candidates retain that classification
+through delayed validation. Candidates observed before MRO was enabled do
+not become eligible merely because validation finishes afterwards. Extra
+instances of an available application do not trigger selection; reopening
+when all instances have disappeared can. Among eligible admissions, the
+latest processed one wins. Manual selection and clearing do not disable MRO.
+Departure never selects a different application. Playback changes and tab
+changes within an existing MPRIS player are not selection events.
+
+Serving reads and writes versioned JSON in
+`$XDG_CONFIG_HOME/media-router/config.json`, falling back to
+`~/.config/media-router/config.json`. Diagnostic runs without `--serve` do
+not use this file. Explicit serving selection/capture arguments replace
+and save the corresponding preferences. Absent arguments preserve them.
+Missing configuration means defaults; invalid/unsupported files are
+preserved and cause serving startup to fail before capture changes.
+
+Example configuration:
+
+```json
+{
+  "version": 1,
+  "selected": {"kind": "desktop-entry", "value": "spotify"},
+  "capture_enabled": false,
+  "auto_select_new": false,
+  "exclusions": []
+}
+```
+
+`selected: null` represents no selection. Only logical identities and
+preferences are persisted, never active service names, owners, revisions,
+or inventories. Stop the daemon before manually editing configuration.
+
+Selection/clear, capture intent, MRO setters, and automatic selections are
+saved before success. Capture then applies the external desktop operation;
+its failure returns `CaptureFailed` while retaining the requested preference.
+Input faults and clean shutdown do not overwrite capture intent. Disabling
+capture preserves selection, even if restoring the desktop fails.
+
+A save failure before file replacement leaves the requested preference and
+capture/selection change unapplied; discovery continues independently.
+If replacement succeeds but directory sync fails, the new intent is visible
+and selection/settings reflect it, but the method still returns
+`PersistenceFailed` because crash durability is uncertain. Capture work is
+not started on a save error. Read both snapshots before retrying; resending
+the request performs a full save even for unchanged values. Automatic-save
+failures have no method caller, so they are logged and exposed in
+`persistence_error`. A later successful save clears that diagnostic; failed
+automatic selections are not queued for later replay.
 
 ## Client synchronization and memory
 
-Subscribe to `StateChanged` before reading `GetState`. Track the service's
+Subscribe to `StateChanged` before reading `GetState`, and to
+`SettingsChanged` before reading `GetSettings`. Track each record's revision
+independently; the two records are not one atomic combined snapshot. Track the service's
 unique owner as well as the latest revision. For the same owner, replace
 local state only with a higher revision; ignore older or equal snapshots.
 Successful mutation replies are snapshots too. All fields within a snapshot
@@ -132,7 +219,8 @@ The publisher may coalesce intermediate revisions if the bus is slow. These
 are complete state updates, not an event log; clients must tolerate revision
 gaps. A current snapshot is enough to reconstruct the UI.
 
-The daemon keeps the latest snapshot and a `u64` revision in RAM. A signal
+The daemon keeps the latest state and settings snapshots and their `u64`
+revisions in RAM. A signal
 in flight and concurrent calls can hold temporary copies; there is no
 snapshot history on disk or in memory. Memory scales with the current
 application inventory and bounded pending work. The capture recovery

@@ -30,13 +30,18 @@ Long options remain supported. These short aliases are also available:
 |---|---|
 | `--interactive` | `-i` |
 | `--capture` | `-c` |
+| `--no-capture` | — |
 | `--serve` | `-s` |
 | `--select DESKTOP_ENTRY` | `-p DESKTOP_ENTRY` |
 | `--select-identity IDENTITY` | `-I IDENTITY` |
 | `--help` | `-h` |
+| `--install-autostart PATH` | — |
+| `--remove-autostart` | — |
 
 Options are case-sensitive: `-i` enables interactive input, while `-I`
-takes a fallback Identity. `--restore-bindings` remains long-only.
+takes a fallback Identity. `--no-capture`, `--restore-bindings`, and both
+autostart commands are long-only.
+`--capture` and `--no-capture` cannot be combined.
 
 Short flags can be grouped. These commands are equivalent:
 
@@ -64,8 +69,9 @@ invalid. No abbreviation of long option names is inferred: use `--serve`,
 not `--server`.
 
 Unknown options, missing values, duplicate options (including mixed forms
-such as `-c --capture`), and multiple selection options are errors. Help
-and recovery must each be used alone, outside a group or other options.
+such as `-c --capture`), and multiple selection options are errors. Help,
+recovery, and autostart commands must each be used alone, outside a group
+or other options.
 When running through Cargo, put app arguments after `--`, for example
 `cargo run --locked -- -ics -p spotify`.
 
@@ -117,12 +123,12 @@ The first validated matching instance stays active while available. If it
 disappears, another matching instance is chosen by service-name ordering.
 The selection never switches to a different application because one closes.
 
-Selection lasts for the current router process and is not saved to disk.
-Restart the command with another selection argument to change it, or use
-the D-Bus API when running with `--serve`. With no selection argument,
-startup displays players without selecting one. Selection currently
-reports availability; add `--interactive` to send terminal commands or
-`--capture` to route hardware transport keys.
+With `--serve`, selection is saved across router restarts and can be changed
+through the D-Bus API. Explicit selection arguments override and save the
+new selection. Without `--serve`, selection is temporary, saved preferences
+are ignored, and omitting a selection argument leaves nothing selected.
+Add `--interactive` to send terminal commands or `--capture` to route
+hardware transport keys.
 Use `--help` for usage.
 
 ## Sending transport commands
@@ -167,7 +173,8 @@ to finish pending commands and exit when neither `--serve` nor `--capture`
 is enabled, or press Ctrl+C to exit immediately.
 An in-flight command may already have executed when interrupted.
 
-Without `--capture`, terminal commands do not change desktop keybindings.
+In diagnostic runs without `--serve`, omitting `--capture` leaves desktop
+keybindings unchanged. Serving runs also honor saved capture preferences.
 Volume and mute are outside the transport command set.
 
 ## Capturing hardware transport keys
@@ -208,7 +215,9 @@ with a fault status. Without `--serve`, capture failures end the process.
 
 The router saves its recovery journal **before** changing Cinnamon settings.
 After a crash, SIGKILL, or power loss, those settings can remain changed,
-even across logout. Recovery runs before the next capture session, or run:
+even across logout. Recovery runs at the next serving startup, including
+when saved capture is disabled, and before a new capture session. To
+recover manually, run:
 
 ```sh
 cargo run --locked -- --restore-bindings
@@ -228,7 +237,11 @@ When external edits are preserved, the original backup is retained as
 Restoration preserves explicit settings and inherited defaults. Detecting
 external edits is best effort: comparison and writing are not atomic, and
 an edit identical to the router’s temporary value is indistinguishable.
-There is no watchdog for immediate crash recovery.
+Serving recovery failure leaves the API available with a capture fault;
+the journal is retained and capture does not start. After addressing the
+cause, `SetCaptureEnabled(false)` retries recovery without acquiring keys.
+Recovery respects the capture lock and cannot restore bindings owned by
+a running capturer. There is no watchdog for immediate crash recovery.
 
 ## Controlling the running daemon
 
@@ -238,8 +251,10 @@ cargo run --locked -- --serve
 
 `--serve` exposes the session-bus service `org.mediarouter.MediaRouter1`.
 It lets clients read applications and availability, change or clear the
-selection, enable/disable capture, and receive state updates. Capture
-starts disabled unless `--capture` is also supplied. Standard input closing
+selection, enable/disable capture, configure MRO auto-selection, and receive
+state and settings updates. Capture follows its saved preference, which
+defaults to disabled. Use `--capture` or `--no-capture` to override and save
+that preference at startup. Standard input closing
 does not stop a serving daemon. Press Ctrl+C to stop and restore bindings.
 
 For example, use these optional diagnostic commands from another terminal:
@@ -250,9 +265,88 @@ busctl --user call org.mediarouter.MediaRouter1 /org/mediarouter/MediaRouter1 or
 ```
 
 Only one API server can run on a session bus. Snapshots and revision numbers
-remain in RAM; selection and preferences are not yet saved across router
-restarts. See the [D-Bus API reference](docs/DBUS_API.md) for the full
+remain in RAM; selection and preferences are saved across router restarts. See the [D-Bus API reference](docs/DBUS_API.md) for the full
 contract, recovery behavior, client synchronization, and examples.
+
+## Saved preferences and automatic selection
+
+Serving runs use `$XDG_CONFIG_HOME/media-router/config.json`, falling back
+to `~/.config/media-router/config.json`. Empty or relative XDG values are
+ignored. Missing configuration defaults to no selection, capture disabled,
+and automatic selection disabled. Invalid configuration causes serving
+startup to fail with an error; the file is preserved for correction.
+Stop the daemon before editing the file directly.
+
+Selection changes, capture requests, and automatic-selection preferences
+are saved before success is reported. A capture failure does not erase
+the enabled preference: another daemon start will retry capture. Normal
+shutdown restores Cinnamon bindings without disabling that saved preference.
+Use `SetCaptureEnabled(false)` or start with `--serve --no-capture` to save
+capture as disabled. The binding-recovery journal remains separate.
+
+Optional **most-recently-opened (MRO)** selection chooses a newly discovered
+eligible media application. It observes MPRIS availability, not process
+creation: a browser may first appear when a media page opens. Startup
+players do not overwrite the saved selection, even when validation is slow.
+Enabling MRO does not select an already discovered application.
+
+Additional instances of an available application do not trigger MRO.
+Reopening after all its instances disappear can trigger it again. Among
+eligible arrivals, the latest validated arrival wins, and may override a
+manual selection. Clearing selection does not disable MRO. Closing the
+selected application never selects another application automatically.
+Playback changes do not trigger automatic selection.
+
+Enable MRO and optionally exclude applications using their exact typed IDs:
+
+```sh
+busctl --user call org.mediarouter.MediaRouter1 /org/mediarouter/MediaRouter1 org.mediarouter.MediaRouter1 SetAutoSelectNew b true
+busctl --user call org.mediarouter.MediaRouter1 /org/mediarouter/MediaRouter1 org.mediarouter.MediaRouter1 SetAutoSelectExclusions 'a(ss)' 1 desktop-entry firefox
+busctl --user call org.mediarouter.MediaRouter1 /org/mediarouter/MediaRouter1 org.mediarouter.MediaRouter1 GetSettings
+```
+
+The exclusions call replaces the entire list; pass a count of `0` to clear
+it. Excluded applications remain manually selectable. Save failures appear
+as API errors and in `GetSettings().persistence_error`; automatic-selection
+save failures are also logged. See the API reference for retry semantics.
+
+## Starting at login
+
+Build and install the executable in a stable location, then explicitly
+register its absolute path. For a per-user installation:
+
+```sh
+cargo build --release --locked
+install -Dm755 target/release/media-router "$HOME/.local/bin/media-router"
+"$HOME/.local/bin/media-router" --install-autostart "$HOME/.local/bin/media-router"
+```
+
+This creates `$XDG_CONFIG_HOME/autostart/media-router.desktop`, normally
+`~/.config/autostart/media-router.desktop`. The entry launches the supplied
+executable with `--serve` at the next Cinnamon login, using saved preferences.
+Installation does not start a daemon immediately. Hardware capture still
+requires Cinnamon on X11 and an enabled capture preference.
+
+Use an installed executable rather than a file under Cargo's `target`
+directory, which a clean build can remove. The path must be absolute, valid
+UTF-8, and point to an executable file; control characters and `=` are not
+supported. Spaces and quoted characters are escaped by the installer.
+If you relocate the executable, rerun installation with the new path.
+
+The installer can update its own entry. It refuses to replace or remove
+an unrecognized entry or a symlink at that filename; inspect and move such
+an entry yourself if you want the router to manage it.
+
+To remove the personal login entry:
+
+```sh
+"$HOME/.local/bin/media-router" --remove-autostart
+```
+
+Removal leaves the running daemon and saved preferences intact. Stop the
+daemon cleanly before removing its executable; recover outstanding binding
+changes first if it crashed. Removing an already absent entry is harmless.
+These commands do not require a running session bus or X server.
 
 ## Contributing
 

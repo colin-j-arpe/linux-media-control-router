@@ -3,7 +3,13 @@ use std::{collections::BTreeMap, fmt};
 use super::{Player, discovery::DiscoveryEvent};
 
 /// Logical application identity, independent of any running D-Bus instance.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
 pub enum ApplicationId {
     DesktopEntry(String),
     Identity(String),
