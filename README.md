@@ -367,6 +367,52 @@ Unix sockets. They use private session buses, X servers, and settings
 files; they do not send input to your desktop or change its keybindings. Unit tests alone can be run with `cargo test --lib
 --locked` in environments that cannot create sockets.
 
+### Tray compatibility probe
+
+To check tray support in a desktop session, run the standalone sample:
+
+```sh
+cargo run --locked --example tray_probe -- --seconds 600
+```
+
+Use this visual checklist. The host controls opening and dismissal for this
+example: on Cinnamon, left-click may do nothing and selections may close the
+menu. These are acceptable host-dependent behaviours; reopen with right-click
+to test the remaining controls.
+
+- [ ] The blue play icon appears without clipping or an opaque background.
+- [ ] Hovering shows the probe title, selected sample, and availability.
+- [ ] The menu opens using the host's supported action (right-click on Cinnamon).
+      Record whether left-click also opens it; this is optional.
+- [ ] Clicking outside or pressing Escape dismisses the menu; it reopens normally.
+- [ ] Radio and checkbox changes work whether the host keeps the menu open or
+      closes it. Reopening preserves the updated state.
+- [ ] The menu stays on-screen; text and separators are readable. The heading
+      and selected-status label are disabled and cannot be activated.
+- [ ] Selecting each sample moves the radio indicator so exactly one is marked;
+      the selected-status label and tooltip follow the selection.
+- [ ] “Simulate unavailable player” gains a checkmark and shows a red exclamation
+      badge on the icon. The status label and tooltip say unavailable. Turning
+      it off removes the badge and restores available status.
+- [ ] “Demo MRO toggle (memory only)” alternates its checkmark and retains its
+      state when the menu is reopened. It does not implement selection policy.
+- [ ] “Show extra sample player” adds “Sample player — 音楽” with readable Unicode.
+      Select it, then hide it: the row disappears and selection returns to the
+      sample music player. Showing it again does not create duplicate rows.
+- [ ] “Demo exclusions” opens a submenu whose checkbox toggles and retains its
+      state on reopening. This sample toggle does not remove the browser row.
+- [ ] Repeated selections and toggles leave no stale labels or extra indicators.
+- [ ] “Quit compatibility probe” removes the icon and ends the process.
+
+Callbacks are logged in the terminal. If multiple displays or scaling settings
+are part of your normal setup, repeat the icon/menu checks there too; this probe
+does not establish compatibility with configurations that have not been tested.
+
+This example uses sample data only and does not control the daemon, media
+players, capture, saved preferences, or autostart. Quit from the menu or use
+Ctrl+C. It exits automatically after the requested duration (default 300
+seconds). A compatible StatusNotifier tray host must be running.
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).

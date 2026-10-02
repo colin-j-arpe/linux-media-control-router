@@ -14,4 +14,5 @@ x11rb = { version = "0.14.0", features = ["xkb"] }
 zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
+ksni = "0.3.6"
 x11rb = { version = "0.14.0", features = ["xtest"] }
