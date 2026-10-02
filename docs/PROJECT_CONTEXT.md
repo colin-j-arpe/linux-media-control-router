@@ -59,10 +59,11 @@ implementation.
 
 The daemon will be written in **Rust**.
 
-A separate tray UI may initially be implemented independently
-(potentially Python or Rust), communicating with the daemon through a
-stable D-Bus API. Keeping the UI separate from the routing daemon is
-intentional.
+The user chose **Rust** for the separate tray UI. It will communicate with
+the daemon through the stable D-Bus API. Keeping the UI separate from the
+routing daemon is intentional. The Cinnamon compatibility probe is complete
+under the portability-first criteria. The user authorized the full Milestone 8
+tray client, explicitly requiring a replaceable GUI boundary.
 
 ### Development Environment
 
@@ -774,6 +775,16 @@ Implement the tray UI against the daemon API.
 
 Include the selected-application-unavailable visual warning state.
 
+Portability takes priority over identical interaction behaviour across Linux
+distributions and desktop environments (user decision, 2026-10-02). Use the
+standard StatusNotifierItem/D-Bus menu approach with Rust/ksni and let the host
+render the menu. Left-click opening and keeping the menu open after selections
+are optional, host-dependent conveniences, not acceptance requirements.
+Right-click access and reopening after selections are acceptable. Do not add
+Cinnamon-specific workarounds or an application-owned popup to enforce these
+conveniences. Tray availability still requires a compatible host; compatibility
+must be tested per environment rather than inferred from protocol support.
+
 ------------------------------------------------------------------------
 
 # Runtime Dependency Principle
@@ -808,7 +819,13 @@ The user confirmed that all three implementation steps are committed;
 merging to main has not been reported. The user will test installation after
 the system-tray interface is complete. No live autostart installation or
 actual login check has been performed. MRP remains a documented future proposal.
-Milestone 8 (tray client) requires a new user approval.
+The user committed the tray compatibility probe to the current branch without
+merging it into main, then authorized Milestone 8 with a replaceable GUI
+boundary. The independent `crates/tray` client is implemented and automated
+checks pass. Core production-menu desktop checks passed on Cinnamon/X11. Live exclusions,
+daemon restart/reconnection, and the previously deferred installation/login
+test remain pending; see the Milestone 8 implementation
+record below. No Git changes have been made by the assistant.
 
 Before adding dependencies, verify current Rust crate choices and
 versions rather than relying on old examples.
@@ -1664,6 +1681,200 @@ general notification identifying an explicit user Play command. Autoplay
 can cause the same transition, so the proposed status-based approximation
 was not accepted for the current version.
 
+## Milestone 8 — Rust tray compatibility probe — 2026-10-01
+
+The user chose Rust and authorized a compatibility test before full tray
+implementation. This is a standalone experiment, not the production tray
+client, and it does not connect to the Media Router daemon API.
+
+- Verified `ksni 0.3.6` from its published documentation and downloaded source.
+  It supports Rust 1.80+, Tokio, and zbus 5, fitting the existing toolchain
+  and dependencies. Added it as a development-only dependency for the Cargo
+  example. The lockfile adds only ksni and its pastey 0.2.3 dependency; existing
+  locked versions are unchanged. ksni's declared license is Unlicense.
+- `examples/tray_probe.rs` exports a StatusNotifierItem and D-Bus menu using
+  sample data. It exercises radio selection, checkboxes, a submenu, dynamic
+  player-list changes, Unicode labels, tooltips, and normal/unavailable icons.
+  Controls affect RAM only; no media commands, capture, preferences, or
+  autostart entries are changed.
+- The temporary icon is a blue play symbol with a composed red exclamation
+  badge in its upper-right corner when unavailable. Pixmaps are supplied at
+  24, 32, and 48 pixels. The badge is part of the main icon rather than relying
+  on a desktop's separate overlay support. Final artwork remains undecided.
+- The example exits on its Quit action, SIGINT/SIGTERM, host loss, or a bounded
+  lifetime (300 seconds by default; `--seconds N` accepts 1–3600).
+- The actual Cinnamon/X11 session exposes org.kde.StatusNotifierWatcher with
+  an active host. A live probe was launched with a 600-second lifetime, and
+  Cinnamon registered it. Read-only introspection confirmed the expected
+  StatusNotifierItem interface and com.canonical.dbusmenu version 3.
+- Cinnamon requested the menu and delivered callbacks for unavailable-state,
+  MRO, exclusion, and dynamic-inventory controls. The Quit action was received
+  and the probe shut down cleanly with exit status 0. Visual rendering and full
+  mouse-interaction confirmation were requested from the user. The user
+  subsequently confirmed that the display appeared correct and requested
+  another run with a comprehensive visual checklist and left-click menu opening.
+  `MENU_ON_ACTIVATE = true` was already set; it remains enabled, with explicit
+  left-click verification included in the README checklist. Detailed results
+  from the second run are recorded below. No shell restart or panel setting was
+  changed for the test.
+- Launched the second probe with a 900-second lifetime for the checklist;
+  it reported ready. Cargo and RustRover builds passed before launch.
+- All 81 existing tests passed after adding the development dependency.
+  The example builds, and the full-target Clippy check passed with warnings
+  denied. RustRover's final build and example inspection reported no problems.
+  README contains contributor instructions to reproduce the probe.
+
+References: `https://docs.rs/ksni/0.3.6/ksni/` and the crate's downloaded
+README/Cargo manifest. Compatibility with other desktops, panel layouts,
+scaling configurations, host restarts, and the production daemon is not
+established by this probe.
+
+### Second-run results and interaction investigation — 2026-10-02
+
+The user confirmed every checklist item except left-click opening. Right-click,
+icon/tooltip rendering, selection indicators, badge changes, dynamic inventory,
+Unicode, submenu checkboxes, dismissal, repeated changes, and Quit all passed.
+The menu closes after each radio/checkbox activation; the user initially
+requested that it remain open between changes. This requirement was later
+relaxed in favour of portability, as recorded below.
+
+Installed versions: Cinnamon 6.6.9+zena and XApp 3.2.3+zena. Reviewing the
+upstream XApp 3.2.3 source explains the left-click failure: `update_menu`
+assigns a primary menu only for its AppIndicator path; ordinary SNI primary
+clicks call `Activate` without a menu fallback. ksni 0.3.6 with
+`MENU_ON_ACTIVATE = true` returns `UnknownMethod("ItemIsMenu")`, relying on
+the host to open the menu. That fallback does not work here. The flag alone
+must not be described as a verified left-click solution for Cinnamon.
+
+XApp renders the exported menu with libdbusmenu GTK. ksni exports menu data
+and callbacks, not the widgets, and exposes no keep-open option for activated
+items. The initial recommendation was a second, isolated Rust prototype
+with an application-owned popup for the controls, using SNI activation to
+open it. This would let the application control dismissal and selection
+behaviour. Toolkit/dependency choice and popup focus, placement, outside-click,
+and Escape handling must be validated before production integration. This
+prototype was not implemented or approved and is superseded by the portability
+decision below. No desktop settings or
+system libraries were modified to work around the host behaviour.
+
+Source: <https://github.com/linuxmint/xapp/blob/3.2.3/xapp-sn-watcher/sn-item.c>
+(`update_menu`, `xapp_icon_button_press`), and the downloaded ksni 0.3.6
+`src/dbus_interface.rs` (`activate`) and `src/menu.rs`.
+
+### Portability priority decision — 2026-10-02
+
+The user explicitly prioritised multiple-distribution/desktop portability over
+left-click menu opening and persistence after selection. Retain the standard
+host-rendered Rust/ksni tray approach. The proposed application-owned popup
+and subsequent control-window alternative are not the selected direction.
+Accept host-native opening and dismissal behaviour rather than introducing
+desktop-specific workarounds. Keep the CLI available independently of tray
+support and report an unavailable tray host clearly in the future client.
+
+Under these revised criteria, the Cinnamon/X11 visual compatibility probe
+passes based on the user's reported results. This does not establish support
+on other desktops, distributions, or Wayland, nor change the current
+Cinnamon/X11 limitation of the media-key capture backend. Further validation
+should cover different tray hosts and display protocols, including graceful
+handling of absent tray support. Full Milestone 8 implementation was subsequently
+authorized as recorded below; no additional GUI toolkit is needed for this choice.
+
+## Milestone 8 — Independent Rust tray client — 2026-10-02
+
+The user committed the probe changes on the current branch (not yet merged)
+and authorized implementation. New architectural requirement: another developer
+must be able to replace the GUI while retaining the daemon, API, and CLI.
+
+Implementation:
+
+- Added a Cargo workspace with root default member `.` and independent package
+  `crates/tray`, producing `media-router-tray`. Normal root builds still build
+  only the daemon/CLI. The GUI has no production dependency on the daemon crate,
+  GIO, or X11. The daemon has no production dependency on the GUI. The root's
+  development dependency on the tray supports an integration test only.
+- `protocol.rs` mirrors the documented v1 D-Bus records; `client.rs` owns API
+  communication; `model.rs` owns snapshot/revision state; `tray.rs` and
+  `icon.rs` own rendering; `main.rs` owns executable lifecycle. No daemon/CLI
+  source or public wire contract changed. Existing ksni 0.3.6 is reused;
+  the lockfile adds only the local workspace package, with no registry upgrades.
+- State/settings subscriptions precede snapshot reads. Calls and signals are
+  pinned to the service's unique owner, revisions are tracked independently,
+  and state is discarded on owner loss/replacement. Commands carry the owner
+  displayed when clicked and are never replayed for a replacement daemon.
+  Requests have a five-second D-Bus timeout and a bounded one-item client queue.
+  Failed mutations are not retried automatically; both snapshots are refreshed
+  because failure or timeout does not prove the mutation was unapplied.
+- Menu: exact typed player identities, instance counts, no-selection option,
+  retained absent selection, capture intent and actual status, capture recovery
+  actions, MRO toggle, and exclusions including absent identities. Display
+  escaping does not modify wire identities. Callbacks request daemon changes;
+  the daemon alone controls selection, capture, and persistence.
+- The blue play icon/red exclamation badge from the probe is reused. Warnings
+  cover absent selection, disconnected daemon, capture faults, and API/save
+  errors, with diagnostic text in the menu. Host-native opening/dismissal is
+  accepted; no Cinnamon-specific workaround or GUI toolkit was added.
+- A missing daemon produces an unavailable menu and retries connection once
+  per second. An absent tray host fails startup; subsequent host loss reports
+  the problem and closes the tray. Session-bus loss requires restarting the
+  tray. A dedicated bus name prevents duplicate instances of this client.
+- Quit/SIGINT/SIGTERM close only the tray. They do not stop the daemon, disable
+  capture, or change saved preferences. The tray never starts the daemon or
+  installs login entries. Existing autostart commands still install the daemon
+  only. README documents separate launch/install commands and GUI replacement.
+
+Known API constraint: exclusions use a read/replace operation. Reading settings
+immediately before editing preserves other entries where possible, but v1 has
+no atomic per-entry operation or revision precondition. Concurrent clients can
+overwrite simultaneous exclusion edits; this is documented, not silently fixed
+by changing the public API.
+
+Verification:
+
+- All 81 pre-existing tests passed in the workspace run, plus six new tray unit
+  tests and one real-daemon client integration test. The latter also passed after
+  adding persistence-failure coverage. Two additional executable lifecycle tests
+  passed, bringing the verified total to 90.
+- Real-daemon/private-bus coverage: missing daemon, exact empty fallback identity,
+  absent selection warning, MRO/exclusions, persistence failure, capture failure
+  and recovery, external API signals, restart/persisted state, and stale-owner
+  action rejection. Private fake-host coverage: absent host, duplicate tray,
+  exported menu Quit, and help/invalid arguments without a bus.
+- Workspace build, all-target Clippy with warnings denied, formatting,
+  `git diff --check`, and RustRover build passed. Dependency-tree checks confirm
+  the production boundary. Tests used private buses, Xvfb, and temporary settings;
+  no live desktop, preferences, keybindings, or login entries were changed.
+
+Implementation and automated verification are complete. Core production-menu
+acceptance checks passed on the user's live Cinnamon/X11 desktop, as recorded
+below. Live exclusions and daemon restart/reconnection checks, plus
+installation/login testing, remain pending. Real capture testing is limited
+to Cinnamon/X11; the GUI/API boundary does not make that backend portable.
+Other desktop/Wayland tray hosts and display configurations remain unverified.
+
+### Production desktop acceptance results — 2026-10-02
+
+The user tested the production daemon and tray and reported that all behaviour
+checked so far was as expected:
+
+- With “Capture media keys” unchecked, the daemon does not affect controls.
+- With capture enabled, switching selection between Spotify and Firefox routes
+  physical media keys to the selected application.
+- With Spotify selected, closing Spotify while Firefox remains open shows the
+  warning icon and leaves media keys unresponsive. Reopening Spotify restores
+  routing to Spotify automatically, preserving selection without fallback.
+- With MRO off, reopening Spotify while Firefox is selected leaves Firefox
+  selected and receiving media keys.
+- With MRO on, reopening Spotify while Firefox is selected selects Spotify
+  and routes media keys to it.
+- Quit removes the tray icon while media keys continue controlling the last
+  selected application, confirming the independent daemon/client lifecycle.
+
+These results establish the tested live behaviour, not completion of the
+remaining manual checks. Exclusion editing, saved settings across daemon
+restart, tray reconnection, and installation/login startup have not yet been
+reported as tested on the live desktop. No implementation changes were needed
+in response to this acceptance report.
+
 ## License decision — 2026-09-26
 
 The user selected Apache License 2.0 for the project. The full, unmodified
@@ -1686,7 +1897,11 @@ the original license text and should remain unchanged.
   deferred to a future version. Milestone 7 implementation and automated
   verification are complete and all three steps are committed. The user has
   deferred installation testing until the system-tray interface is complete;
-  actual login startup has not been tested. Milestone 8 is not authorized.
+  actual login startup has not been tested. The Rust tray compatibility test
+  passed the revised portability criteria. Full Milestone 8 was authorized and
+  its independent client implementation and automated checks are complete;
+  core production-menu checks passed on Cinnamon/X11; live exclusions, daemon
+  restart/reconnection, and installation/login checks remain pending.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.

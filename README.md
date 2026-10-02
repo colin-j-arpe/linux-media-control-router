@@ -22,6 +22,60 @@ cargo fmt --check
 
 The debug executable is written to `target/debug/media-router`.
 
+## Tray client
+
+Build the separate GUI executable:
+
+```sh
+cargo build --locked -p media-router-tray
+```
+
+Run the daemon and tray in separate terminals (or launch the tray alongside
+an already running daemon):
+
+```sh
+target/debug/media-router --serve
+```
+
+```sh
+target/debug/media-router-tray
+```
+
+The tray requires a StatusNotifier-compatible host on the session bus.
+Right-click the blue play icon on Cinnamon. Other hosts may also support
+left-click; menu opening and dismissal follow the desktop's conventions.
+The tray does not start the daemon or install login entries. The existing
+`--install-autostart` command starts only the daemon. To install the tray
+executable separately, use `cargo install --locked --path crates/tray`.
+
+The menu provides:
+
+- Player selection, including applications without a DesktopEntry and a
+  retained selection whose application has closed. “No selection” clears it.
+- A capture checkbox showing saved intent, plus a separate actual capture
+  status and recovery actions when capture is faulted.
+- MRO auto-selection and exclusions. Absent excluded applications stay in
+  the submenu so their exclusions can be removed.
+- Connection, request, capture, and preference-save diagnostics.
+- “Quit tray,” which leaves the daemon and capture running.
+
+The red exclamation badge indicates an unavailable selected application,
+an unavailable daemon, or a reported error; inspect the menu for the reason.
+Settings and selection are confirmed by the daemon, not changed optimistically
+by the GUI. A failed or timed-out request is not automatically retried; inspect
+the refreshed state before trying again. Preferences are saved by the daemon.
+The capture backend still requires Cinnamon/X11 regardless of tray support.
+
+The tray reconnects when the daemon starts or restarts, and discards actions
+for an old daemon. If the tray host is absent at startup, it exits with an
+error. If the host disappears later, the tray reports that and exits; restart
+it when the host returns. After a session-bus failure, restart the tray too.
+Only one instance of this tray client may run on a session bus.
+
+The v1 exclusions API replaces the whole list. The tray rereads it before an
+edit, but simultaneous exclusion edits from multiple clients can still
+overwrite one another; avoid editing that list concurrently.
+
 ## Short command-line options
 
 Long options remain supported. These short aliases are also available:
@@ -356,16 +410,92 @@ architectural changes.
 The package uses Rust edition 2024. Run the checks from the repository root:
 
 ```sh
-cargo test --locked
-cargo clippy --all-targets --locked -- -D warnings
-cargo fmt --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo fmt --all --check
 ```
 
 Integration tests require `dbus-daemon`, `Xvfb` (`xvfb` on Linux Mint),
 the Cinnamon media-key settings schema, and permission to create local
 Unix sockets. They use private session buses, X servers, and settings
 files; they do not send input to your desktop or change its keybindings. Unit tests alone can be run with `cargo test --lib
---locked` in environments that cannot create sockets.
+--locked` in environments that cannot create sockets. Tray unit tests can be
+run with `cargo test -p media-router-tray --lib --locked`.
+
+### Replacing the GUI
+
+The root package is the daemon/CLI. `crates/tray` is an independent workspace
+package; neither production package depends on the other's Rust implementation.
+The root's development dependency on the tray exists only for the real-daemon
+client integration test. A normal `cargo build --locked` builds the daemon/CLI;
+use `--workspace` to build both packages.
+
+The tray package separates responsibilities:
+
+| File | Responsibility |
+|---|---|
+| `src/protocol.rs` | Client-side records matching the public D-Bus contract |
+| `src/client.rs` | Owner tracking, snapshots, signals, and API requests |
+| `src/model.rs` | Revision handling and UI state |
+| `src/tray.rs`, `src/icon.rs` | Replaceable tray menu and artwork |
+| `src/main.rs` | Executable lifecycle and session-bus connection |
+
+A replacement GUI can use any language or toolkit and communicate solely
+through [DBUS_API.md](docs/DBUS_API.md) and its linked interface XML. It should
+not read configuration files, discover MPRIS players, or manipulate capture
+settings directly. Preserve owner/revision synchronization and error semantics.
+The tray has no GLib/GIO or X11 dependency of its own.
+
+To remove this GUI from a fork, remove `crates/tray`, its workspace-member and
+development-dependency entries from the root manifest, and
+`tests/tray_client.rs`. The daemon source and public API need no changes.
+To keep the client but replace its widgets, start with `tray.rs` and `icon.rs`.
+
+### Tray compatibility probe
+
+To check tray support in a desktop session, run the standalone sample:
+
+```sh
+cargo run --locked --example tray_probe -- --seconds 600
+```
+
+Use this visual checklist. The host controls opening and dismissal for this
+example: on Cinnamon, left-click may do nothing and selections may close the
+menu. These are acceptable host-dependent behaviours; reopen with right-click
+to test the remaining controls.
+
+- [ ] The blue play icon appears without clipping or an opaque background.
+- [ ] Hovering shows the probe title, selected sample, and availability.
+- [ ] The menu opens using the host's supported action (right-click on Cinnamon).
+      Record whether left-click also opens it; this is optional.
+- [ ] Clicking outside or pressing Escape dismisses the menu; it reopens normally.
+- [ ] Radio and checkbox changes work whether the host keeps the menu open or
+      closes it. Reopening preserves the updated state.
+- [ ] The menu stays on-screen; text and separators are readable. The heading
+      and selected-status label are disabled and cannot be activated.
+- [ ] Selecting each sample moves the radio indicator so exactly one is marked;
+      the selected-status label and tooltip follow the selection.
+- [ ] “Simulate unavailable player” gains a checkmark and shows a red exclamation
+      badge on the icon. The status label and tooltip say unavailable. Turning
+      it off removes the badge and restores available status.
+- [ ] “Demo MRO toggle (memory only)” alternates its checkmark and retains its
+      state when the menu is reopened. It does not implement selection policy.
+- [ ] “Show extra sample player” adds “Sample player — 音楽” with readable Unicode.
+      Select it, then hide it: the row disappears and selection returns to the
+      sample music player. Showing it again does not create duplicate rows.
+- [ ] “Demo exclusions” opens a submenu whose checkbox toggles and retains its
+      state on reopening. This sample toggle does not remove the browser row.
+- [ ] Repeated selections and toggles leave no stale labels or extra indicators.
+- [ ] “Quit compatibility probe” removes the icon and ends the process.
+
+Callbacks are logged in the terminal. If multiple displays or scaling settings
+are part of your normal setup, repeat the icon/menu checks there too; this probe
+does not establish compatibility with configurations that have not been tested.
+
+This example uses sample data only and does not control the daemon, media
+players, capture, saved preferences, or autostart. Quit from the menu or use
+Ctrl+C. It exits automatically after the requested duration (default 300
+seconds). A compatible StatusNotifier tray host must be running.
 
 ## License
 
