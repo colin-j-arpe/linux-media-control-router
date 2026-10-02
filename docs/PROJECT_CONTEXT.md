@@ -61,8 +61,9 @@ The daemon will be written in **Rust**.
 
 The user chose **Rust** for the separate tray UI. It will communicate with
 the daemon through the stable D-Bus API. Keeping the UI separate from the
-routing daemon is intentional. The first authorized tray step is a Cinnamon
-compatibility probe before committing to a tray library and full UI design.
+routing daemon is intentional. The Cinnamon compatibility probe is complete
+under the portability-first criteria. The user authorized the full Milestone 8
+tray client, explicitly requiring a replaceable GUI boundary.
 
 ### Development Environment
 
@@ -818,8 +819,13 @@ The user confirmed that all three implementation steps are committed;
 merging to main has not been reported. The user will test installation after
 the system-tray interface is complete. No live autostart installation or
 actual login check has been performed. MRP remains a documented future proposal.
-The user chose Rust for Milestone 8 and authorized a tray compatibility
-test. Full tray-client implementation remains a later approval checkpoint.
+The user committed the tray compatibility probe to the current branch without
+merging it into main, then authorized Milestone 8 with a replaceable GUI
+boundary. The independent `crates/tray` client is implemented and automated
+checks pass. Core production-menu desktop checks passed on Cinnamon/X11. Live exclusions,
+daemon restart/reconnection, and the previously deferred installation/login
+test remain pending; see the Milestone 8 implementation
+record below. No Git changes have been made by the assistant.
 
 Before adding dependencies, verify current Rust crate choices and
 versions rather than relying on old examples.
@@ -1770,8 +1776,104 @@ passes based on the user's reported results. This does not establish support
 on other desktops, distributions, or Wayland, nor change the current
 Cinnamon/X11 limitation of the media-key capture backend. Further validation
 should cover different tray hosts and display protocols, including graceful
-handling of absent tray support. Full Milestone 8 implementation remains the
-next approval checkpoint; no additional GUI toolkit is needed for this choice.
+handling of absent tray support. Full Milestone 8 implementation was subsequently
+authorized as recorded below; no additional GUI toolkit is needed for this choice.
+
+## Milestone 8 — Independent Rust tray client — 2026-10-02
+
+The user committed the probe changes on the current branch (not yet merged)
+and authorized implementation. New architectural requirement: another developer
+must be able to replace the GUI while retaining the daemon, API, and CLI.
+
+Implementation:
+
+- Added a Cargo workspace with root default member `.` and independent package
+  `crates/tray`, producing `media-router-tray`. Normal root builds still build
+  only the daemon/CLI. The GUI has no production dependency on the daemon crate,
+  GIO, or X11. The daemon has no production dependency on the GUI. The root's
+  development dependency on the tray supports an integration test only.
+- `protocol.rs` mirrors the documented v1 D-Bus records; `client.rs` owns API
+  communication; `model.rs` owns snapshot/revision state; `tray.rs` and
+  `icon.rs` own rendering; `main.rs` owns executable lifecycle. No daemon/CLI
+  source or public wire contract changed. Existing ksni 0.3.6 is reused;
+  the lockfile adds only the local workspace package, with no registry upgrades.
+- State/settings subscriptions precede snapshot reads. Calls and signals are
+  pinned to the service's unique owner, revisions are tracked independently,
+  and state is discarded on owner loss/replacement. Commands carry the owner
+  displayed when clicked and are never replayed for a replacement daemon.
+  Requests have a five-second D-Bus timeout and a bounded one-item client queue.
+  Failed mutations are not retried automatically; both snapshots are refreshed
+  because failure or timeout does not prove the mutation was unapplied.
+- Menu: exact typed player identities, instance counts, no-selection option,
+  retained absent selection, capture intent and actual status, capture recovery
+  actions, MRO toggle, and exclusions including absent identities. Display
+  escaping does not modify wire identities. Callbacks request daemon changes;
+  the daemon alone controls selection, capture, and persistence.
+- The blue play icon/red exclamation badge from the probe is reused. Warnings
+  cover absent selection, disconnected daemon, capture faults, and API/save
+  errors, with diagnostic text in the menu. Host-native opening/dismissal is
+  accepted; no Cinnamon-specific workaround or GUI toolkit was added.
+- A missing daemon produces an unavailable menu and retries connection once
+  per second. An absent tray host fails startup; subsequent host loss reports
+  the problem and closes the tray. Session-bus loss requires restarting the
+  tray. A dedicated bus name prevents duplicate instances of this client.
+- Quit/SIGINT/SIGTERM close only the tray. They do not stop the daemon, disable
+  capture, or change saved preferences. The tray never starts the daemon or
+  installs login entries. Existing autostart commands still install the daemon
+  only. README documents separate launch/install commands and GUI replacement.
+
+Known API constraint: exclusions use a read/replace operation. Reading settings
+immediately before editing preserves other entries where possible, but v1 has
+no atomic per-entry operation or revision precondition. Concurrent clients can
+overwrite simultaneous exclusion edits; this is documented, not silently fixed
+by changing the public API.
+
+Verification:
+
+- All 81 pre-existing tests passed in the workspace run, plus six new tray unit
+  tests and one real-daemon client integration test. The latter also passed after
+  adding persistence-failure coverage. Two additional executable lifecycle tests
+  passed, bringing the verified total to 90.
+- Real-daemon/private-bus coverage: missing daemon, exact empty fallback identity,
+  absent selection warning, MRO/exclusions, persistence failure, capture failure
+  and recovery, external API signals, restart/persisted state, and stale-owner
+  action rejection. Private fake-host coverage: absent host, duplicate tray,
+  exported menu Quit, and help/invalid arguments without a bus.
+- Workspace build, all-target Clippy with warnings denied, formatting,
+  `git diff --check`, and RustRover build passed. Dependency-tree checks confirm
+  the production boundary. Tests used private buses, Xvfb, and temporary settings;
+  no live desktop, preferences, keybindings, or login entries were changed.
+
+Implementation and automated verification are complete. Core production-menu
+acceptance checks passed on the user's live Cinnamon/X11 desktop, as recorded
+below. Live exclusions and daemon restart/reconnection checks, plus
+installation/login testing, remain pending. Real capture testing is limited
+to Cinnamon/X11; the GUI/API boundary does not make that backend portable.
+Other desktop/Wayland tray hosts and display configurations remain unverified.
+
+### Production desktop acceptance results — 2026-10-02
+
+The user tested the production daemon and tray and reported that all behaviour
+checked so far was as expected:
+
+- With “Capture media keys” unchecked, the daemon does not affect controls.
+- With capture enabled, switching selection between Spotify and Firefox routes
+  physical media keys to the selected application.
+- With Spotify selected, closing Spotify while Firefox remains open shows the
+  warning icon and leaves media keys unresponsive. Reopening Spotify restores
+  routing to Spotify automatically, preserving selection without fallback.
+- With MRO off, reopening Spotify while Firefox is selected leaves Firefox
+  selected and receiving media keys.
+- With MRO on, reopening Spotify while Firefox is selected selects Spotify
+  and routes media keys to it.
+- Quit removes the tray icon while media keys continue controlling the last
+  selected application, confirming the independent daemon/client lifecycle.
+
+These results establish the tested live behaviour, not completion of the
+remaining manual checks. Exclusion editing, saved settings across daemon
+restart, tray reconnection, and installation/login startup have not yet been
+reported as tested on the live desktop. No implementation changes were needed
+in response to this acceptance report.
 
 ## License decision — 2026-09-26
 
@@ -1796,7 +1898,10 @@ the original license text and should remain unchanged.
   verification are complete and all three steps are committed. The user has
   deferred installation testing until the system-tray interface is complete;
   actual login startup has not been tested. The Rust tray compatibility test
-  is authorized; full Milestone 8 implementation requires further approval.
+  passed the revised portability criteria. Full Milestone 8 was authorized and
+  its independent client implementation and automated checks are complete;
+  core production-menu checks passed on Cinnamon/X11; live exclusions, daemon
+  restart/reconnection, and installation/login checks remain pending.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.

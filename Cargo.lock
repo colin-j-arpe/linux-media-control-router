@@ -401,10 +401,22 @@ dependencies = [
  "futures-util",
  "gio",
  "ksni",
+ "media-router-tray",
  "serde",
  "serde_json",
  "tokio",
  "x11rb",
+ "zbus",
+]
+
+[[package]]
+name = "media-router-tray"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "ksni",
+ "serde",
+ "tokio",
  "zbus",
 ]
 

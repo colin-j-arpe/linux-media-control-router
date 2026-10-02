@@ -22,6 +22,60 @@ cargo fmt --check
 
 The debug executable is written to `target/debug/media-router`.
 
+## Tray client
+
+Build the separate GUI executable:
+
+```sh
+cargo build --locked -p media-router-tray
+```
+
+Run the daemon and tray in separate terminals (or launch the tray alongside
+an already running daemon):
+
+```sh
+target/debug/media-router --serve
+```
+
+```sh
+target/debug/media-router-tray
+```
+
+The tray requires a StatusNotifier-compatible host on the session bus.
+Right-click the blue play icon on Cinnamon. Other hosts may also support
+left-click; menu opening and dismissal follow the desktop's conventions.
+The tray does not start the daemon or install login entries. The existing
+`--install-autostart` command starts only the daemon. To install the tray
+executable separately, use `cargo install --locked --path crates/tray`.
+
+The menu provides:
+
+- Player selection, including applications without a DesktopEntry and a
+  retained selection whose application has closed. “No selection” clears it.
+- A capture checkbox showing saved intent, plus a separate actual capture
+  status and recovery actions when capture is faulted.
+- MRO auto-selection and exclusions. Absent excluded applications stay in
+  the submenu so their exclusions can be removed.
+- Connection, request, capture, and preference-save diagnostics.
+- “Quit tray,” which leaves the daemon and capture running.
+
+The red exclamation badge indicates an unavailable selected application,
+an unavailable daemon, or a reported error; inspect the menu for the reason.
+Settings and selection are confirmed by the daemon, not changed optimistically
+by the GUI. A failed or timed-out request is not automatically retried; inspect
+the refreshed state before trying again. Preferences are saved by the daemon.
+The capture backend still requires Cinnamon/X11 regardless of tray support.
+
+The tray reconnects when the daemon starts or restarts, and discards actions
+for an old daemon. If the tray host is absent at startup, it exits with an
+error. If the host disappears later, the tray reports that and exits; restart
+it when the host returns. After a session-bus failure, restart the tray too.
+Only one instance of this tray client may run on a session bus.
+
+The v1 exclusions API replaces the whole list. The tray rereads it before an
+edit, but simultaneous exclusion edits from multiple clients can still
+overwrite one another; avoid editing that list concurrently.
+
 ## Short command-line options
 
 Long options remain supported. These short aliases are also available:
@@ -356,16 +410,46 @@ architectural changes.
 The package uses Rust edition 2024. Run the checks from the repository root:
 
 ```sh
-cargo test --locked
-cargo clippy --all-targets --locked -- -D warnings
-cargo fmt --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo fmt --all --check
 ```
 
 Integration tests require `dbus-daemon`, `Xvfb` (`xvfb` on Linux Mint),
 the Cinnamon media-key settings schema, and permission to create local
 Unix sockets. They use private session buses, X servers, and settings
 files; they do not send input to your desktop or change its keybindings. Unit tests alone can be run with `cargo test --lib
---locked` in environments that cannot create sockets.
+--locked` in environments that cannot create sockets. Tray unit tests can be
+run with `cargo test -p media-router-tray --lib --locked`.
+
+### Replacing the GUI
+
+The root package is the daemon/CLI. `crates/tray` is an independent workspace
+package; neither production package depends on the other's Rust implementation.
+The root's development dependency on the tray exists only for the real-daemon
+client integration test. A normal `cargo build --locked` builds the daemon/CLI;
+use `--workspace` to build both packages.
+
+The tray package separates responsibilities:
+
+| File | Responsibility |
+|---|---|
+| `src/protocol.rs` | Client-side records matching the public D-Bus contract |
+| `src/client.rs` | Owner tracking, snapshots, signals, and API requests |
+| `src/model.rs` | Revision handling and UI state |
+| `src/tray.rs`, `src/icon.rs` | Replaceable tray menu and artwork |
+| `src/main.rs` | Executable lifecycle and session-bus connection |
+
+A replacement GUI can use any language or toolkit and communicate solely
+through [DBUS_API.md](docs/DBUS_API.md) and its linked interface XML. It should
+not read configuration files, discover MPRIS players, or manipulate capture
+settings directly. Preserve owner/revision synchronization and error semantics.
+The tray has no GLib/GIO or X11 dependency of its own.
+
+To remove this GUI from a fork, remove `crates/tray`, its workspace-member and
+development-dependency entries from the root manifest, and
+`tests/tray_client.rs`. The daemon source and public API need no changes.
+To keep the client but replace its widgets, start with `tray.rs` and `icon.rs`.
 
 ### Tray compatibility probe
 

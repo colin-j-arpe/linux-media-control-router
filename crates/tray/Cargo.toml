@@ -1,0 +1,13 @@
+[package]
+name = "media-router-tray"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Replaceable D-Bus tray client for Media Router"
+
+[dependencies]
+futures-util = { version = "0.3.34", default-features = false, features = ["std", "async-await"] }
+ksni = "0.3.6"
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.1", features = ["macros", "rt", "signal", "sync", "time"] }
+zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }

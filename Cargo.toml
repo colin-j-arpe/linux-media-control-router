@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 
+[workspace]
+members = ["crates/tray"]
+default-members = ["."]
+resolver = "3"
+
 [dependencies]
 futures-util = { version = "0.3.34", default-features = false, features = ["std", "async-await"] }
 gio = "0.22"
@@ -15,4 +20,5 @@ zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 ksni = "0.3.6"
+media-router-tray = { path = "crates/tray" }
 x11rb = { version = "0.14.0", features = ["xtest"] }
