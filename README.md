@@ -77,6 +77,22 @@ The v1 exclusions API replaces the whole list. The tray rereads it before an
 edit, but simultaneous exclusion edits from multiple clients can still
 overwrite one another; avoid editing that list concurrently.
 
+## Known limitations and deferred features
+
+On the tested Cinnamon/X11 system, playback keys do not respond while some
+GTK tray menus are open, including Media Router and Update Manager. Cinnamon
+emits no media-key notifications during that interval; closing the menu
+immediately restores control. Cinnamon panel menus such as Sound do not show
+this interruption. Reclaiming media keys does not resolve the missing
+notifications. This desktop limitation is accepted; no menu workaround is
+implemented.
+
+Selection targets media applications rather than individual browser tabs.
+Selecting individual tabs with media content is a deferred feature; standard
+MPRIS does not reliably provide a separately addressable player for each tab.
+Most-recently-played selection (MRP) is also deferred. The current optional
+auto-selection mode is MRO, which reacts to newly available media applications.
+
 ## Short command-line options
 
 Long options remain supported. These short aliases are also available:

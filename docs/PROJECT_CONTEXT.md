@@ -801,39 +801,28 @@ Use native Rust/D-Bus/X11 APIs for production functionality.
 
 # Immediate Development Task
 
-Milestones 1 through 5 are complete. The user confirmed a successful
-physical-key test through the CLI and that all changes were committed and
-merged into `main`.
-Milestone 6 is complete; the user confirmed that CLI service commands
-function as expected. The user committed, pushed, and merged Milestone 6
-into `main`, then authorized Milestone 6.1 for CLI abbreviations on
-`feature/6.1-cli-switches`. Milestone 6.1 is complete; the user confirmed
-that its changes were committed, pushed, and merged into `main`. The user
-authorized Milestone 7 (persistence/startup) on 2026-10-01, on branch
-`feature/7-startup`. The user approved the original persistence, MRO
-auto-selection, and startup policies, and deferred MRP to a future version.
-Milestone 7 implementation and isolated automated verification are complete:
-configuration storage, daemon/API persistence, MRO selection, opt-in login
-startup commands, and recovery on serving startup even with capture disabled.
-The user confirmed that all three implementation steps are committed;
-merging to main has not been reported. The user will test installation after
-the system-tray interface is complete. No live autostart installation or
-actual login check has been performed. MRP remains a documented future proposal.
-The user committed the tray compatibility probe to the current branch without
-merging it into main, then authorized Milestone 8 with a replaceable GUI
-boundary. The independent `crates/tray` client is implemented and automated
-checks pass. Core production-menu desktop checks passed on Cinnamon/X11. Live exclusions,
-daemon restart/reconnection, and the previously deferred installation/login
-test remain pending; see the Milestone 8 implementation
-record below. The user subsequently approved Cinnamon D-Bus capture with
-reclaim on relevant events plus a manual reclaim action. Implementation and
-isolated verification are complete. Live production routing/MRO, locked-screen
-control, and manual/automatic reclaim under contender competition have passed.
-Volume/mute, held-key behaviour, new-backend lifecycle/persistence, and exclusions
-have subsequently passed live acceptance. Installation and autostart registration
-are complete; actual login startup and autostart removal remain untested. Media
-keys are unresponsive while the tray menu is open; investigation remains pending. See the integration record below. No Git commits or pushes
-have been made by the assistant.
+All planned milestone implementations (1–8, plus 6.1) and automated
+verification are complete. Live Cinnamon/X11 acceptance passed routing,
+persistent selection, MRO and exclusions, capture disable/re-enable, tray
+quit/relaunch, daemon restart/reconnection, volume/mute, held-key behaviour,
+locked-screen control, and manual/automatic reclaim under contender competition.
+The user committed the lock-screen changes and merged them into `main`.
+
+Installation and autostart registration are complete. Actual startup after
+login/reboot and autostart removal remain the final acceptance checks. Other
+desktops and Wayland remain outside verified coverage.
+
+The debug branch investigated media-key interruption while GTK tray menus are
+open. A live D-Bus trace confirmed no Cinnamon MediaPlayerKeyPressed signals
+during Media Router and Update Manager menus, while signals continued during
+the Sound menu. Closing affected menus restores routing immediately. The
+interruption is upstream of the daemon; a GTK keyboard grab is the likely
+cause, not directly traced. The user accepted this as a desktop limitation
+and chose to leave menu behaviour unchanged.
+
+MRP and selecting individual browser tabs with media content are deferred
+features, not outstanding v1 milestones. No implementation is authorized for
+either. No Git commits or pushes have been made by the assistant.
 
 Before adding dependencies, verify current Rust crate choices and
 versions rather than relying on old examples.
@@ -1689,6 +1678,15 @@ general notification identifying an explicit user Play command. Autoplay
 can cause the same transition, so the proposed status-based approximation
 was not accepted for the current version.
 
+## Deferred feature: individual browser-tab selection — 2026-10-05
+
+The user requested recording selection of individual browser tabs with media
+content as a deferred feature. It remains outside v1 scope and is not approved
+for implementation. Standard MPRIS does not reliably expose each browser tab
+as an independently addressable player; a future investigation must establish
+a supported browser integration and stable tab identity before choosing an
+approach. Application-level selection remains the current behaviour.
+
 ## Milestone 8 — Rust tray compatibility probe — 2026-10-01
 
 The user chose Rust and authorized a compatibility test before full tray
@@ -2349,20 +2347,13 @@ the original license text and should remain unchanged.
 ## Development workflow
 
 - Proceed incrementally, with user approval before each new milestone.
-  Milestones 1 through 6 are complete, including the user-confirmed
-  physical-key and CLI service-command checks. Milestone 6.1 is complete
-  and merged into `main`. Milestone 7 is authorized with its original
-  persistence, MRO auto-selection, and startup policies approved. MRP is
-  deferred to a future version. Milestone 7 implementation and automated
-  verification are complete and all three steps are committed. The user has
-  deferred installation testing until the system-tray interface is complete;
-  actual login startup has not been tested. The Rust tray compatibility test
-  passed the revised portability criteria. Full Milestone 8 was authorized and
-  its independent client implementation and automated checks are complete;
-  core production-menu checks, live exclusions, and daemon restart/reconnection
-  passed on Cinnamon/X11. Installation and autostart registration are complete;
-  actual login startup and autostart removal remain pending. The reported
-  tray-menu-open key interruption remains unresolved.
+  All milestone implementations (1–8, plus 6.1) and automated verification
+  are complete. Live Cinnamon/X11 acceptance passed, except actual login
+  startup and autostart removal, which remain pending. Installation and
+  autostart registration are complete. The tray-menu-open interruption is
+  accepted as a desktop limitation; no workaround is planned. MRP and
+  individual browser-tab selection are deferred features requiring approval
+  before implementation.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.
