@@ -54,6 +54,7 @@ The menu provides:
   retained selection whose application has closed. “No selection” clears it.
 - A capture checkbox showing saved intent, plus a separate actual capture
   status and recovery actions when capture is faulted.
+- “Reclaim media keys” refreshes active listener priority without changing settings.
 - MRO auto-selection and exclusions. Absent excluded applications stay in
   the submenu so their exclusions can be removed.
 - Connection, request, capture, and preference-save diagnostics.
@@ -85,6 +86,7 @@ Long options remain supported. These short aliases are also available:
 | `--interactive` | `-i` |
 | `--capture` | `-c` |
 | `--no-capture` | — |
+| `--input-backend cinnamon-dbus\|x11` | — |
 | `--serve` | `-s` |
 | `--select DESKTOP_ENTRY` | `-p DESKTOP_ENTRY` |
 | `--select-identity IDENTITY` | `-I IDENTITY` |
@@ -241,33 +243,61 @@ cargo run --locked -- --select spotify --capture
 
 Wait for `CAPTURE READY` and `SELECTION AVAILABLE`, then use your media
 keys. Play and Pause keys both toggle play/pause. Stop, Previous, and Next
-route to the selected application. Holding a key sends one command per
-press. Caps Lock, Num Lock, and Scroll Lock do not prevent capture.
+route to the selected application. The D-Bus backend follows Cinnamon's
+logical key events; held-key repetition follows the desktop. Legacy X11
+capture suppresses repeated events until release. Caps Lock, Num Lock, and
+Scroll Lock do not prevent plain-key capture.
 Volume and mute remain under desktop control.
 
-Capture temporarily removes only the five plain `XF86Audio*` transport
-shortcuts from their corresponding Cinnamon settings. Custom shortcuts
-remain active in Cinnamon and follow **Cinnamon’s player choice**, which
-may differ from Media Router’s selection. Modified transport shortcuts
-(such as Ctrl+Play) are not captured.
+The default `cinnamon-dbus` backend registers for Cinnamon's media-key events
+without changing keybindings. It routes Play/Pause, Stop, Previous, and Next
+while unlocked and while locked when lock-screen keyboard shortcuts are allowed.
+Volume and mute remain handled by Cinnamon.
 
-No selected/available application means transport inputs are discarded.
-`--interactive` can be combined with `--capture`; closing terminal input
-then leaves hardware capture running. Ctrl+C or SIGTERM stops capture and
-restores the prior settings. Only one capture/recovery process may run
-against the same state directory.
+Listener priority is best effort. Another application can register later and
+receive the keys instead. The daemon refreshes registration on successful
+selection requests, admitted player arrivals, and screen activation. It does
+not refresh periodically or detect silent priority loss. Use **Reclaim media
+keys** in the tray if the keys stop following your selection. This action
+requires active capture and does not change saved preferences. CLI/API clients
+can request the same action:
 
-If another application holds the required keys, startup fails and rolls
-back the changes. Capture also stops and attempts to restore bindings if the relevant
-keyboard mappings change, the X connection fails, or a binding changed by
-the router is edited externally. Restart after a keyboard mapping change.
-External edits are preserved during restoration, with a diagnostic.
-With `--serve`, capture failures leave discovery and API access running,
-with a fault status. Without `--serve`, capture failures end the process.
+```sh
+busctl --user call org.mediarouter.MediaRouter1 /org/mediarouter/MediaRouter1 org.mediarouter.MediaRouter1 ReclaimMediaKeys
+```
 
-### Recovering after a crash
+Normal plain Cinnamon transport bindings are required. Custom or disabled
+transport shortcuts are preserved and reported as a capture fault; the D-Bus
+event cannot distinguish a custom accelerator from a hardware media key.
+External edits to these bindings also stop capture without overwriting them.
+The legacy backend remains available explicitly:
 
-The router saves its recovery journal **before** changing Cinnamon settings.
+```sh
+media-router --serve --input-backend x11
+```
+
+The backend choice applies to that process and is not a saved preference;
+normal launches and login startup use `cinnamon-dbus`. Legacy X11 capture
+removes only plain XF86 transport bindings, preserves custom shortcuts under
+Cinnamon's player choice, and restores changed values on exit. It cannot receive
+keys while the lock screen owns the keyboard. Reclaim is a no-op for its
+existing passive grabs.
+
+No selected/available application means received transport inputs are discarded.
+`--interactive` can be combined with `--capture`; closing terminal input leaves
+capture running. Ctrl+C or SIGTERM releases capture. Only one capture/recovery
+process may run against the same state directory. Cinnamon also removes a
+vanished D-Bus listener when its connection closes, including after a crash.
+The new backend does not create a binding-recovery journal.
+
+Screensaver idle exits and restarts do not interrupt D-Bus capture. Media-key
+service loss/replacement or registration failure stops capture and reports a
+fault; retry enabling after the cause is addressed. With `--serve`, discovery
+and API access remain running. Without `--serve`, capture faults end the process.
+
+## Recovering after a crash
+
+Legacy X11 capture saves its recovery journal **before** changing Cinnamon settings.
 After a crash, SIGKILL, or power loss, those settings can remain changed,
 even across logout. Recovery runs at the next serving startup, including
 when saved capture is disabled, and before a new capture session. To
@@ -334,7 +364,8 @@ Stop the daemon before editing the file directly.
 Selection changes, capture requests, and automatic-selection preferences
 are saved before success is reported. A capture failure does not erase
 the enabled preference: another daemon start will retry capture. Normal
-shutdown restores Cinnamon bindings without disabling that saved preference.
+shutdown releases capture without disabling that saved preference; legacy X11
+capture also restores Cinnamon bindings.
 Use `SetCaptureEnabled(false)` or start with `--serve --no-capture` to save
 capture as disabled. The binding-recovery journal remains separate.
 
@@ -496,6 +527,57 @@ This example uses sample data only and does not control the daemon, media
 players, capture, saved preferences, or autostart. Quit from the menu or use
 Ctrl+C. It exits automatically after the requested duration (default 300
 seconds). A compatible StatusNotifier tray host must be running.
+
+### Cinnamon lock-screen media-key probe
+
+This standalone diagnostic checks Cinnamon's D-Bus media-key delivery without
+sending playback commands. Turn off **Capture media keys** in the
+tray first, so Cinnamon's original transport bindings are restored. Keep
+capture off throughout the experiment.
+
+```sh
+cargo build --locked --example media_keys_probe
+target/debug/examples/media_keys_probe --seconds 900
+```
+
+The probe logs events only: while it owns Cinnamon's listener priority,
+transport keys produce log lines rather than controlling playback. It sends
+no MPRIS commands and changes no keybindings or saved preferences. Volume
+and mute remain handled by the desktop. It refuses empty transport bindings
+or disabled lock-screen keyboard shortcuts instead of modifying settings.
+
+- Wait for `PROBE READY`, then press Play/Pause, Stop, Previous, and Next.
+  Verify each produces the expected `KEY` line.
+- Lock the screen manually, press the same keys at the password screen,
+  unlock, and inspect the log for events between `SCREEN active=true` and
+  `SCREEN active=false`. The active flag alone also includes an unlocked
+  screensaver; confirm you were actually locked.
+- Repeat the key presses after unlocking. Check volume/mute while locked too.
+- With the main probe running, start a second terminal:
+
+  ```sh
+  target/debug/examples/media_keys_probe --contender --seconds 60
+  ```
+
+  Key events should move to the contender; after it exits, they should return
+  to the main probe. Repeat while locked if practical. Opening/reopening actual
+  players while the main probe runs also tests whether they take priority.
+- Stop the main probe with Ctrl+C or wait for its lifetime to expire. Confirm
+  `PROBE RELEASED`, then check Cinnamon's usual media-key behaviour. Re-enable
+  Media Router capture when finished.
+
+Default lifetime is 600 seconds; `--seconds` accepts 1–3600. SIGINT/SIGTERM
+release registration; disconnect cleanup is also handled by Cinnamon. The
+screensaver normally exits while idle. The probe tolerates its disappearance
+and return, and does not activate or keep it alive. `screen_active=None` means
+no current snapshot; `Some(true)` and `Some(false)` report the observed state.
+Owner transitions identify the service and its old/new connection owners.
+Media-key service ownership changes or bus loss end the probe without replaying
+registration; screensaver ownership changes leave media-key registration intact.
+Registration uses Cinnamon's last-registered-listener priority; this is a
+compatibility experiment, not a guarantee of exclusive delivery. The production
+default backend uses this service; this probe remains a separate log-only
+diagnostic and does not exercise routing or automatic reclaim.
 
 ## License
 

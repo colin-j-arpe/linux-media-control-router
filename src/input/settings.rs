@@ -21,7 +21,7 @@ const SCHEMA: &str = "org.cinnamon.desktop.keybindings.media-keys";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Value {
-    effective: Vec<String>,
+    pub(super) effective: Vec<String>,
     user: Option<Vec<String>>,
 }
 

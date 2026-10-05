@@ -153,6 +153,7 @@ pub enum Error {
 pub enum Operation {
     Select(Option<ApplicationId>),
     Capture(bool),
+    Reclaim,
     AutoSelectNew(bool),
     Exclusions(Vec<ApplicationId>),
 }
@@ -205,6 +206,11 @@ impl Service {
     }
     async fn set_capture_enabled(&self, enabled: bool) -> Result<State, Error> {
         self.request(Operation::Capture(enabled))
+            .await
+            .map(|reply| reply.state)
+    }
+    async fn reclaim_media_keys(&self) -> Result<State, Error> {
+        self.request(Operation::Reclaim)
             .await
             .map(|reply| reply.state)
     }

@@ -225,6 +225,9 @@ impl Router {
     fn with_args(desktop: &Desktop, args: &[&str]) -> Self {
         let mut command = desktop.command();
         command.args(args);
+        if !args.contains(&"--restore-bindings") {
+            command.args(["--input-backend", "x11"]);
+        }
         Self::with_command(command)
     }
     fn with_command(mut command: Command) -> Self {
