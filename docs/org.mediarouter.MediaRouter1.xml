@@ -17,6 +17,9 @@
       <arg name="enabled" type="b" direction="in"/>
       <arg name="state" type="(ta(sssu)(ssbss)(ss))" direction="out"/>
     </method>
+    <method name="ReclaimMediaKeys">
+      <arg name="state" type="(ta(sssu)(ssbss)(ss))" direction="out"/>
+    </method>
     <method name="GetSettings">
       <arg name="settings" type="(tbba(ss)s)" direction="out"/>
     </method>

@@ -1,4 +1,5 @@
-//! Cinnamon/X11 capture with a durable, independently recoverable settings lease.
+//! Replaceable Cinnamon input backends with shared legacy binding recovery.
+mod cinnamon_dbus;
 mod settings;
 mod x11;
 
@@ -9,11 +10,11 @@ use std::time::Duration;
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-pub struct Capture {
+struct X11Capture {
     keyboard: Option<x11::Keyboard>,
     lease: Lease<Cinnamon>,
 }
-impl Capture {
+impl X11Capture {
     pub async fn start() -> Result<Self> {
         if std::env::var("XDG_SESSION_TYPE").as_deref() != Ok("x11")
             || !std::env::var("XDG_CURRENT_DESKTOP")
@@ -83,7 +84,7 @@ impl Capture {
         self.lease.restore()
     }
 }
-impl Drop for Capture {
+impl Drop for X11Capture {
     fn drop(&mut self) {
         if let Err(error) = self.stop() {
             eprintln!("BINDING RECOVERY REQUIRED: {error}; run media-router --restore-bindings");
@@ -103,5 +104,52 @@ pub fn recover_pending_bindings() -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
         Ok(_) => Lease::open(Cinnamon::new()?, directory)?.restore(),
+    }
+}
+
+/// Backend selection is a process option, independent of saved capture intent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Backend {
+    #[default]
+    CinnamonDbus,
+    X11,
+}
+pub enum Event {
+    Action(TransportAction),
+    Reclaim,
+}
+pub struct Capture {
+    backend: Active,
+}
+enum Active {
+    Cinnamon(cinnamon_dbus::Capture),
+    X11(Box<X11Capture>),
+}
+impl Capture {
+    pub async fn start(backend: Backend) -> Result<Self> {
+        Ok(Self {
+            backend: match backend {
+                Backend::CinnamonDbus => Active::Cinnamon(cinnamon_dbus::Capture::start().await?),
+                Backend::X11 => Active::X11(Box::new(X11Capture::start().await?)),
+            },
+        })
+    }
+    pub async fn next(&mut self) -> Result<Event> {
+        match &mut self.backend {
+            Active::Cinnamon(capture) => capture.next().await,
+            Active::X11(capture) => capture.next().await.map(Event::Action),
+        }
+    }
+    pub async fn reclaim(&mut self) -> Result<()> {
+        match &mut self.backend {
+            Active::Cinnamon(capture) => capture.reclaim().await,
+            Active::X11(_) => Ok(()), // X11 grabs remain owned while active.
+        }
+    }
+    pub async fn stop(&mut self) -> Result<()> {
+        match &mut self.backend {
+            Active::Cinnamon(capture) => capture.stop().await,
+            Active::X11(capture) => capture.stop(),
+        }
     }
 }

@@ -22,6 +22,7 @@ lock, preventing two daemons on different buses from overwriting the same file.
 | `SelectApplication` | `kind: s`, `value: s` | Applied `State` |
 | `ClearSelection` | None | Applied `State` |
 | `SetCaptureEnabled` | `enabled: b` | Applied `State` |
+| `ReclaimMediaKeys` | None | Applied `State` |
 | `StateChanged` (signal) | — | Complete `State` |
 | `GetSettings` | None | `Settings` |
 | `SetAutoSelectNew` | `enabled: b` | Applied `Settings` |
@@ -70,7 +71,8 @@ Capture `(ss)` contains `status` and `error`:
 
 - `disabled`: capture is off; no error.
 - `starting`: acquisition is in progress; no error.
-- `enabled`: hardware keys have been acquired; no error.
+- `enabled`: input registration/grabs are active; no error. Cinnamon D-Bus
+  registration is best effort and does not prove current listener priority.
 - `faulted`: capture is not active; error explains the failure. Restoration
   may still require recovery. Do not interpret this as clean disablement.
 
@@ -86,10 +88,32 @@ current healthy state does not increment the revision.
 
 Capture defaults to off and follows saved intent on serving startup.
 Explicit `--capture`/`--no-capture` override and save that intent.
-Enabling uses the same settings journal
-as CLI capture and may take about two seconds while Cinnamon releases grabs.
-Disabling releases grabs and restores prior settings, preserving external
-edits. It retains the application selection.
+The default `cinnamon-dbus` backend registers with Cinnamon without changing
+keybindings. It supports locked-screen delivery when Cinnamon allows keyboard
+shortcuts there. Normal plain transport bindings are required; custom/disabled
+transport settings are preserved and reported as a capture fault. Use the
+process option `--input-backend x11` for legacy capture, which uses the existing
+settings journal and passive grabs. This backend option is not persisted and
+is not changed by tray actions; login startup uses the default backend.
+Disabling releases registration/grabs and retains selection.
+
+`ReclaimMediaKeys()` refreshes active Cinnamon listener registration. It does
+not enable capture, change selection/settings, or save preferences. With capture
+inactive it returns CaptureFailed. With legacy X11 capture it is a no-op because
+the daemon retains its passive grabs. Success means the registration call was
+acknowledged, not that exclusive priority is guaranteed. Another registering
+listener can supersede it without a notification or priority query.
+
+While capture is active, successful selection requests (including clearing or
+reselecting), admitted player arrivals, and screen activation automatically
+refresh priority. There is no periodic refresh. Screen activation includes an
+unlocked screensaver. Screensaver owner changes alone do not fault capture;
+its signal subscription follows exit/restart. Media-key service loss/replacement
+faults capture; retry SetCaptureEnabled(true) after service availability returns.
+An automatic/manual reclaim failure stops input and publishes a fault while
+retaining saved intent. A successful saved selection can therefore be applied
+even when its subsequent reclaim returns CaptureFailed; inspect state on errors.
+Selection persistence errors prevent that request's reclaim attempt.
 
 Before applying saved capture intent at serving startup, the daemon recovers
 any outstanding binding journal, even when capture is disabled. No journal

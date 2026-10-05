@@ -105,6 +105,12 @@ async fn real_daemon_contract_settings_errors_and_restart() {
     let daemon = sandbox.daemon();
     let initial = wait(&mut views, View::connected).await;
     let owner = initial.owner.unwrap();
+    send(&commands, &owner, Action::Reclaim).await;
+    let failed_reclaim = wait(&mut views, |v| {
+        !v.busy && v.error.contains("capture is not active")
+    })
+    .await;
+    assert!(failed_reclaim.connected());
     let empty = Identity {
         kind: "identity".into(),
         value: String::new(),

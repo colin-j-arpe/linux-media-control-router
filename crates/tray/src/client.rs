@@ -116,6 +116,7 @@ async fn mutate(proxy: &Proxy<'_>, action: Action, view: &mut View) -> zbus::Res
         Action::Capture(enabled) => {
             view.apply_state(proxy.call("SetCaptureEnabled", &(enabled,)).await?)
         }
+        Action::Reclaim => view.apply_state(proxy.call("ReclaimMediaKeys", &()).await?),
         Action::AutoSelect(enabled) => {
             view.apply_settings(proxy.call("SetAutoSelectNew", &(enabled,)).await?)
         }

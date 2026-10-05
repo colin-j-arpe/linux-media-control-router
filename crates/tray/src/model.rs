@@ -52,6 +52,7 @@ impl View {
 pub enum Action {
     Select(Option<Identity>),
     Capture(bool),
+    Reclaim,
     AutoSelect(bool),
     Exclude(Identity, bool),
 }

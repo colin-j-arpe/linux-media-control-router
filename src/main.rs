@@ -10,7 +10,7 @@ use tokio::{
 use media_router::{
     config::{self, Preferences, Store},
     dbus_api::{self, CaptureState, Operation, Response, Server, Settings, State},
-    input::Capture,
+    input::{Backend, Capture, Event as InputEvent},
 };
 
 use media_router::player::{
@@ -33,7 +33,8 @@ async fn main() -> ExitCode {
             interactive,
             capture,
             serve,
-        }) => match watch(selected, interactive, capture, serve).await {
+            backend,
+        }) => match watch(selected, interactive, capture, serve, backend).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("media-router: {error}");
@@ -97,6 +98,7 @@ async fn watch(
     interactive: bool,
     capture_override: Option<bool>,
     serve: bool,
+    backend: Backend,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Register before announcing readiness, including when stdin is idle.
     let mut interrupts = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
@@ -157,7 +159,7 @@ async fn watch(
     if preferences.capture_enabled && capture_state.status != "faulted" {
         capture_state.status = "starting".into();
         publish(&server, &selection, &capture_state);
-        let result = change_capture(&mut capture, &mut capture_state, true).await;
+        let result = change_capture(&mut capture, &mut capture_state, true, backend).await;
         publish(&server, &selection, &capture_state);
         if let Err(error) = result {
             if !serve {
@@ -166,6 +168,15 @@ async fn watch(
             eprintln!("CAPTURE FAULT: {error}");
         }
     }
+    eprintln!(
+        "CAPTURE STATUS: backend={} desired={} actual={}",
+        match backend {
+            Backend::CinnamonDbus => "cinnamon-dbus",
+            Backend::X11 => "x11",
+        },
+        preferences.capture_enabled,
+        capture_state.status,
+    );
     if serve {
         eprintln!("API READY: {} {}", dbus_api::NAME, dbus_api::PATH);
     }
@@ -219,12 +230,21 @@ async fn watch(
                 }
                 Some(request) = requests.recv(), if serve => {
                     if request.reply.is_closed() { continue; }
+                    if matches!(request.operation, Operation::Reclaim) {
+                        let result = reclaim_capture(&mut capture, &mut capture_state).await;
+                        let state = publish(&server, &selection, &capture_state);
+                        let settings = server.as_ref().expect("serving").settings();
+                        let _ = request.reply.send(result.map(|()| Response { state, settings }));
+                        continue;
+                    }
+                    let selection_request = matches!(request.operation, Operation::Select(_));
                     let store = store.as_mut().expect("serving configuration");
                     let service = server.as_ref().expect("serving");
                     let mut next = store.preferences().clone();
                     match &request.operation {
                         Operation::Select(application) => next.selected = application.clone(),
                         Operation::Capture(enabled) => next.capture_enabled = *enabled,
+                        Operation::Reclaim => unreachable!("handled without persistence"),
                         Operation::AutoSelectNew(enabled) => next.auto_select_new = *enabled,
                         Operation::Exclusions(exclusions) => next.exclusions = exclusions.clone(),
                     }
@@ -242,11 +262,14 @@ async fn watch(
                                 capture_state.error.clear();
                                 publish(&server, &selection, &capture_state);
                             }
-                            change_capture(&mut capture, &mut capture_state, enabled).await
+                            change_capture(&mut capture, &mut capture_state, enabled, backend).await
                                 .map_err(dbus_api::Error::CaptureFailed)
                         }
                         (Ok(()), _) => Ok(()),
                     };
+                    let result = if result.is_ok() && selection_request && capture.is_some() {
+                        reclaim_capture(&mut capture, &mut capture_state).await
+                    } else { result };
                     print_selection(selection.state());
                     let snapshot = publish(&server, &selection, &capture_state);
                     let settings = service.settings();
@@ -272,6 +295,11 @@ async fn watch(
                         state_sender.send_replace(after.clone());
                         print_selection(after);
                     }
+                    if matches!(event, DiscoveryEvent::Added(_)) && capture.is_some()
+                        && let Err(error) = reclaim_capture(&mut capture, &mut capture_state).await {
+                        eprintln!("AUTOMATIC RECLAIM FAILED (player arrival): {error}");
+                        if !serve { return Err(error.to_string().into()); }
+                    }
                     publish(&server, &selection, &capture_state);
                 }
                 result = commands.join_next(), if !commands.is_empty() => {
@@ -280,10 +308,17 @@ async fn watch(
                 }
                 action = async { capture.as_mut().expect("capture enabled").next().await }, if capture_state.status == "enabled" => {
                     match action {
-                        Ok(action) => enqueue(action, selection.state(), &mut pending),
+                        Ok(InputEvent::Action(action)) => enqueue(action, selection.state(), &mut pending),
+                        Ok(InputEvent::Reclaim) => {
+                            if let Err(error) = reclaim_capture(&mut capture, &mut capture_state).await {
+                                eprintln!("AUTOMATIC RECLAIM FAILED (screen activation): {error}");
+                                if !serve { return Err(error.to_string().into()); }
+                            }
+                            publish(&server, &selection, &capture_state);
+                        }
                         Err(error) => {
                             let mut message = error.to_string();
-                            if let Err(cleanup) = change_capture(&mut capture, &mut capture_state, false).await {
+                            if let Err(cleanup) = change_capture(&mut capture, &mut capture_state, false, backend).await {
                                 message.push_str(&format!("; restoration failed: {cleanup}"));
                             }
                             capture_state = CaptureState { status: "faulted".into(), error: message.clone() };
@@ -316,7 +351,7 @@ async fn watch(
     }.await;
     commands.abort_all();
     if let Some(capture) = capture.as_mut() {
-        capture.stop()?;
+        capture.stop().await?;
     }
     result
 }
@@ -348,19 +383,27 @@ async fn change_capture(
     capture: &mut Option<Capture>,
     state: &mut CaptureState,
     enabled: bool,
+    backend: Backend,
 ) -> Result<(), String> {
     let result = async {
-        if enabled && state.status == "enabled" { return Ok(()); }
-        if let Some(current) = capture.as_mut() { current.stop().map_err(|e| e.to_string())?; }
+        if enabled && state.status == "enabled" {
+            return Ok(());
+        }
+        if let Some(current) = capture.as_mut() {
+            current.stop().await.map_err(|e| e.to_string())?;
+        }
         capture.take();
         if enabled {
-            *capture = Some(Capture::start().await.map_err(|e| e.to_string())?);
-            eprintln!("CAPTURE READY: hardware transport keys acquired; Ctrl+C restores Cinnamon bindings.");
+            *capture = Some(Capture::start(backend).await.map_err(|e| e.to_string())?);
+            eprintln!(
+                "CAPTURE READY: hardware transport input registered; Ctrl+C releases capture."
+            );
         } else if state.status == "faulted" {
             media_router::input::restore_bindings().map_err(|e| e.to_string())?;
         }
         Ok::<(), String>(())
-    }.await;
+    }
+    .await;
     match &result {
         Ok(()) => {
             *state = CaptureState {
@@ -376,6 +419,35 @@ async fn change_capture(
         }
     }
     result
+}
+
+async fn reclaim_capture(
+    capture: &mut Option<Capture>,
+    state: &mut CaptureState,
+) -> Result<(), dbus_api::Error> {
+    let Some(current) = capture.as_mut() else {
+        return Err(dbus_api::Error::CaptureFailed(
+            "capture is not active; enable capture first".into(),
+        ));
+    };
+    match current.reclaim().await {
+        Ok(()) => {
+            eprintln!("CAPTURE RECLAIMED: best-effort listener priority refreshed");
+            Ok(())
+        }
+        Err(error) => {
+            let mut message = error.to_string();
+            if let Err(cleanup) = current.stop().await {
+                message.push_str(&format!("; cleanup failed: {cleanup}"));
+            }
+            capture.take();
+            *state = CaptureState {
+                status: "faulted".into(),
+                error: message.clone(),
+            };
+            Err(dbus_api::Error::CaptureFailed(message))
+        }
+    }
 }
 
 fn enqueue(

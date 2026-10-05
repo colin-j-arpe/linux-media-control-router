@@ -1,6 +1,6 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use media_router::player::selection::ApplicationId;
+use media_router::{input::Backend, player::selection::ApplicationId};
 
 pub const HELP: &str =
     "Usage: media-router [--select DESKTOP_ENTRY | --select-identity IDENTITY] [--interactive] [--capture | --no-capture] [--serve]
@@ -15,6 +15,7 @@ Watch MPRIS players and report the selected application's availability.
   -i, --interactive             Accept transport commands from standard input.
   -c, --capture                 Capture hardware transport keys on Cinnamon/X11.
       --no-capture              Disable capture, overriding a saved preference.
+      --input-backend NAME      cinnamon-dbus (default) or x11 (legacy).
   -s, --serve                   Expose the session-bus API; keep running after stdin EOF.
       --restore-bindings        Recover saved Cinnamon bindings and exit.
       --install-autostart PATH  Install a Cinnamon login entry for this executable.
@@ -36,7 +37,7 @@ and returns. Press Ctrl+C to stop.
 Interactive commands: play-pause, stop, previous, next (one per line).
 Without --serve, --interactive, or --capture this command only observes players.
 End terminal input to finish pending commands; serving or capture keeps running.
-Press Ctrl+C to stop and restore captured bindings.";
+Press Ctrl+C to release capture. Legacy X11 capture restores saved bindings.";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
@@ -45,6 +46,7 @@ pub enum Command {
         interactive: bool,
         capture: Option<bool>,
         serve: bool,
+        backend: Backend,
     },
     Help,
     RestoreBindings,
@@ -119,6 +121,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, S
         interactive: options.interactive,
         capture: options.capture,
         serve: options.serve,
+        backend: options.backend.unwrap_or_default(),
     })
 }
 
@@ -128,6 +131,7 @@ struct Options {
     interactive: bool,
     capture: Option<bool>,
     serve: bool,
+    backend: Option<Backend>,
 }
 impl Options {
     fn apply(
@@ -147,6 +151,17 @@ impl Options {
                     });
                 }
                 self.capture = Some(option == "--capture");
+                Ok(())
+            }
+            "--input-backend" => {
+                if self.backend.is_some() {
+                    return Err("duplicate option --input-backend".into());
+                }
+                self.backend = Some(match arguments.next().as_deref() {
+                    Some("cinnamon-dbus") => Backend::CinnamonDbus,
+                    Some("x11") => Backend::X11,
+                    _ => return Err("--input-backend requires cinnamon-dbus or x11".into()),
+                });
                 Ok(())
             }
             "--serve" => set_flag(&mut self.serve, option),
@@ -200,7 +215,8 @@ mod tests {
                 selected: None,
                 interactive: false,
                 capture: None,
-                serve: false
+                serve: false,
+                backend: Backend::CinnamonDbus,
             }
         );
         assert_eq!(
@@ -209,7 +225,8 @@ mod tests {
                 selected: Some(ApplicationId::DesktopEntry("spotify".into())),
                 interactive: false,
                 capture: None,
-                serve: false
+                serve: false,
+                backend: Backend::CinnamonDbus,
             }
         );
         for identity in ["Spotify", "Player With Spaces", " Lecteur 音楽 ", ""] {
@@ -219,7 +236,8 @@ mod tests {
                     selected: Some(ApplicationId::Identity(identity.into())),
                     interactive: false,
                     capture: None,
-                    serve: false
+                    serve: false,
+                    backend: Backend::CinnamonDbus,
                 }
             );
         }
@@ -265,7 +283,8 @@ mod tests {
                 selected: None,
                 interactive: true,
                 capture: None,
-                serve: false
+                serve: false,
+                backend: Backend::CinnamonDbus,
             }
         );
     }
@@ -278,7 +297,8 @@ mod tests {
                 selected: None,
                 interactive: false,
                 capture: Some(true),
-                serve: false
+                serve: false,
+                backend: Backend::CinnamonDbus,
             }
         );
         assert_eq!(
@@ -310,7 +330,8 @@ mod tests {
                 selected: Some(ApplicationId::DesktopEntry("spotify".into())),
                 interactive: true,
                 capture: Some(true),
-                serve: true
+                serve: true,
+                backend: Backend::CinnamonDbus,
             }
         );
         for arguments in [
@@ -393,6 +414,7 @@ mod tests {
                     interactive: false,
                     capture: None,
                     serve: false,
+                    backend: Backend::CinnamonDbus,
                 }
             );
         }
@@ -458,6 +480,7 @@ mod tests {
                 interactive: false,
                 capture: Some(false),
                 serve: true,
+                backend: Backend::CinnamonDbus,
             }
         );
         for input in [
@@ -487,6 +510,30 @@ mod tests {
             vec!["--remove-autostart", "-s"],
         ] {
             assert!(args(&values).is_err());
+        }
+    }
+
+    #[test]
+    fn backend_option_is_explicit_validated_and_not_a_capture_override() {
+        let command = args(&["--serve", "--input-backend", "x11"]).unwrap();
+        assert!(matches!(
+            command,
+            Command::Watch {
+                backend: Backend::X11,
+                capture: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            args(&["--input-backend", "cinnamon-dbus"]).unwrap(),
+            args(&[]).unwrap()
+        );
+        for input in [
+            vec!["--input-backend"],
+            vec!["--input-backend", "unknown"],
+            vec!["--input-backend", "x11", "--input-backend", "x11"],
+        ] {
+            assert!(args(&input).is_err());
         }
     }
 

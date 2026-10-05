@@ -825,7 +825,15 @@ boundary. The independent `crates/tray` client is implemented and automated
 checks pass. Core production-menu desktop checks passed on Cinnamon/X11. Live exclusions,
 daemon restart/reconnection, and the previously deferred installation/login
 test remain pending; see the Milestone 8 implementation
-record below. No Git changes have been made by the assistant.
+record below. The user subsequently approved Cinnamon D-Bus capture with
+reclaim on relevant events plus a manual reclaim action. Implementation and
+isolated verification are complete. Live production routing/MRO, locked-screen
+control, and manual/automatic reclaim under contender competition have passed.
+Volume/mute, held-key behaviour, new-backend lifecycle/persistence, and exclusions
+have subsequently passed live acceptance. Installation and autostart registration
+are complete; actual login startup and autostart removal remain untested. Media
+keys are unresponsive while the tray menu is open; investigation remains pending. See the integration record below. No Git commits or pushes
+have been made by the assistant.
 
 Before adding dependencies, verify current Rust crate choices and
 versions rather than relying on old examples.
@@ -1875,6 +1883,457 @@ restart, tray reconnection, and installation/login startup have not yet been
 reported as tested on the live desktop. No implementation changes were needed
 in response to this acceptance report.
 
+## Cinnamon locked-screen capture investigation and prototype — 2026-10-02
+
+After the production tray checks, the user reported that music continues on
+locking but hardware transport keys cannot control the selected application;
+unlocking restores control. The user authorized a standalone compatibility
+prototype for Cinnamon's D-Bus media-key service before production changes.
+
+Evidence and design:
+
+- The installed cinnamon-screensaver manager takes a hard keyboard grab on
+  the lock-screen window. The current router uses passive X11 transport grabs,
+  so the observed interruption is consistent with the lock screen receiving
+  input instead of the router.
+- Installed `util/keybindings.py` loads the transport shortcuts from the same
+  Cinnamon schema that router capture temporarily clears. Allowed shortcuts
+  are forwarded through `org.cinnamon.SettingsDaemon.KeybindingHandler`.
+  An active router capture therefore also leaves the lock-screen transport
+  shortcut list empty. The probe requires capture off and does not restore or
+  change settings itself.
+- Live introspection confirms service `org.gnome.SettingsDaemon`, object
+  `/org/gnome/SettingsDaemon/MediaKeys`, interface
+  `org.gnome.SettingsDaemon.MediaKeys`, with GrabMediaPlayerKeys(s,u),
+  ReleaseMediaPlayerKeys(s), and MediaPlayerKeyPressed(s,s). The service and
+  interface names differ intentionally for compatibility with existing apps.
+- Upstream Cinnamon source gives the most recently registered listener
+  priority and directs events to its unique connection owner. Another
+  registering application can supersede a listener; deterministic ownership
+  remains a production feasibility concern. No repeated priority reclamation
+  or replacement backend has been approved or implemented.
+
+Prototype implementation:
+
+- `examples/media_keys_probe.rs` uses existing dependencies and logs events
+  only. No playback commands, preferences, autostart, or keybinding writes.
+  It checks that transport bindings are nonempty and lock-screen keyboard
+  shortcuts are allowed before registering. It subscribes before registration,
+  pins the media-key proxy to its unique owner, and ends on media-key service
+  owner changes or stream loss rather than replaying registration. Screensaver
+  lifecycle monitoring was subsequently corrected as recorded below.
+- Default lifetime 600 seconds, configurable from 1–3600; SIGINT/SIGTERM and
+  expiry release the listener. Error paths also attempt release because a
+  timed-out registration could have applied. Closing the connection lets
+  Cinnamon remove a vanished listener. Separate singleton bus names prevent
+  duplicate primary or contender probes.
+- `--contender` registers a distinct listener for manual priority testing.
+  Logs normalize Play/Pause, Stop, Previous, and Next. Screensaver ActiveChanged
+  and an initial GetActive snapshot annotate observations; active is not proof
+  of an authentication lock, so the user must verify testing at the password
+  screen. README documents the physical-key and contender checklist.
+- Build with locked offline dependencies, example Clippy with warnings denied,
+  formatting, whitespace checks, help, and invalid-duration handling passed.
+  The live API was inspected read-only. Physical unlocked/locked key delivery,
+  contender priority, real-player interference, and post-release behaviour
+  remain unverified. The user subsequently ran the probe with capture off,
+  exposing the dormant-screensaver startup issue recorded below.
+
+
+Follow-up startup fix:
+
+- The user's first run failed with NameHasNoOwner for
+  `org.cinnamon.ScreenSaver`. The installed screensaver is D-Bus activatable
+  and may have no owner until needed; GetNameOwner alone does not activate it.
+- The probe now calls GetActive through the well-known screensaver name before
+  resolving and pinning its owner, then subscribes and refreshes the snapshot.
+  This can start the screensaver service but does not lock/unlock the screen
+  or change settings. The queued initial owner-acquisition signal is accepted
+  when it matches the pinned owner; loss/replacement still ends the probe.
+- A two-second live run began with NameHasOwner=false, reached PROBE READY
+  with screen_active=false, expired, and reported PROBE RELEASED with exit 0.
+  This verifies dormant-service activation, registration, and timed cleanup;
+  no physical-key or locked-delivery claims follow from this startup check.
+- The rebuilt executable rejects --seconds 90000 before accessing settings
+  or D-Bus. The user's reported 90000 run differed from the checked source's
+  1–3600 bound; the cause of that discrepancy was not established.
+- The corrected example build, Clippy with warnings denied, formatting, and
+  whitespace checks passed. The physical unlocked/locked test subsequently
+  passed as recorded below; listener priority tests remain pending.
+
+### Physical-key delivery result — 2026-10-02
+
+The user supplied the complete log from a 900-second probe, manually stopped
+with Ctrl+C after the unlocked/locked/unlocked sequence:
+
+- Unlocked: Play, Stop, Previous, Next arrived at +3.567 to +6.369 seconds.
+- Screen activated at +9.865 seconds. During the user's lock-screen test,
+  all four actions arrived at +13.102 to +16.604 seconds with
+  screen_active=true.
+- Screen deactivated at +29.238 seconds. After unlocking, all four actions
+  arrived again at +32.974 to +35.349 seconds with screen_active=false.
+- Ctrl+C produced PROBE RELEASED for the main listener, with no reported error.
+
+This confirms physical transport-key delivery through Cinnamon's D-Bus
+service across the reported lock/unlock cycle on this Cinnamon/X11 system.
+The probe logged events only; it did not route playback commands. The active
+flag alone is not proof of an authentication lock; interpretation relies on
+this being the user's requested lock-screen test. The existing production
+backend remains unchanged. Dedicated Pause-key coverage, volume/mute behaviour,
+contender takeover/return, real-player registration interference, and normal
+post-release media-key behaviour have not yet been reported. Priority tests
+remain the next feasibility check before proposing production integration.
+
+
+### Priority-test interruption and screensaver lifecycle fix — 2026-10-02
+
+The user's contender test delivered all four transport actions to the contender.
+Both probes then ended with the generic service-ownership error; the contender
+log did not contain the lifetime-expired message, so reaching its 60-second
+expiry was not established. In a second run, manually stopping the contender
+released registration and the main probe received Play at +33.570 seconds before
+ending with the same ownership error. This establishes takeover and one returned
+event, not a complete successful priority test.
+
+Installed `cinnamon-screensaver-main.py` explicitly configures a 30000ms idle
+exit and documents normal shutdown after 30 seconds. The earlier probe incorrectly
+treated this expected screensaver disappearance as fatal. That makes the user's
+shared errors consistent with idle shutdown; the old logs do not identify which
+service changed, so this is an evidence-based diagnosis rather than proof of the
+exact transition in those runs.
+
+The corrected probe:
+
+- Maintains media-key registration across screensaver absence, disappearance,
+  and return. Screensaver ActiveChanged uses a well-known-name signal stream;
+  zbus tracks its owner for filtering. Snapshot queries address the current
+  unique owner. The probe no longer activates or holds the screensaver merely
+  to annotate keys, superseding the earlier GetActive activation workaround.
+- Reports optional screen state: None for unavailable, Some(true/false) for an
+  observed snapshot. Owner-change logs identify the service, old/new owners,
+  and elapsed time. Media-key service owner changes still terminate the probe
+  without replaying registration; screensaver transitions do not.
+- A private-bus regression test passed with no initial screensaver, appearance,
+  disappearance, return under a different unique owner, and another departure.
+  The listener continued to its own lifetime deadline.
+- A 40-second live run explicitly started/queried the screensaver before the
+  probe. The screensaver disappeared at +30.014 seconds; the probe logged the
+  owner loss and unknown snapshot, continued to its 40-second deadline, and
+  released registration with exit status 0. This reproduces and resolves the
+  idle-shutdown failure independently of contender registration.
+- Corrected example build, example test, Clippy with warnings denied, formatting,
+  and whitespace checks passed. README reflects the revised lifecycle behavior.
+
+The natural-expiry main/contender test subsequently passed as recorded below.
+Full manual-release return coverage, locked delivery after screensaver restart,
+and interference from real applications remain outstanding. Production capture
+and routing code remain unchanged.
+
+### Contender priority and natural-expiry return result — 2026-10-02
+
+The user supplied ordered logs from the corrected main probe (900 seconds) and
+contender (60 seconds), both starting with screen_active=None:
+
+- The contender received Play, Stop, Previous, and Next at +3.043, +3.981,
+  +4.838, and +5.685 seconds respectively.
+- The contender reported PROBE lifetime expired, then PROBE RELEASED, with
+  no reported error.
+- After contender expiry, the original probe received all four actions at
+  +72.721, +73.471, +74.159, and +75.223 seconds respectively (relative to
+  the main probe's start).
+- Ctrl+C then released the main probe cleanly. No service-ownership errors
+  were reported, and absent screensaver snapshots did not interrupt delivery.
+
+This verifies last-registered-listener takeover and automatic return to the
+remaining listener after the contender's natural expiry on the tested system.
+It does not establish exclusive ownership: another registered listener can
+supersede the router. The next check is reopening real players (Spotify and
+Firefox) while the main probe remains running and checking whether events still
+reach it. Repeat the lock/unlock test with the corrected lifecycle handling to
+cover screensaver reappearance. No production backend change is authorized by
+these probe results alone.
+
+
+### Real-player interference check interrupted by job suspension — 2026-10-02
+
+The user used Brave instead of Firefox to avoid disturbing an existing Firefox
+session. With Brave and Spotify closed, all four transport actions reached the
+main probe at +9.362 through +10.853 seconds. Opening Spotify did not prevent
+subsequent Play, Previous, Next, and Play events from reaching the probe at
++120.950 through +124.460 seconds; Spotify did not respond. Lack of playback
+response is expected for this log-only registered listener. Stop was not present
+in the supplied post-Spotify event sequence.
+
+The user then closed Spotify, opened Brave, and navigated to YouTube. YouTube
+did not respond. The pasted Brave event block repeats the exact Spotify timestamps
+and actions, so new key delivery after Brave opened is not established by that
+block. Brave-specific interference and the corrected lock/unlock repeat remain
+unconfirmed.
+
+The user accidentally pressed Ctrl-Z, suspending the probe. A subsequent launch
+failed with NameTaken because the suspended process retained its singleton D-Bus
+name and media-key listener registration. This is normal shell job-control
+behaviour, not a duplicate-instance defect. Resume the job with `fg` in the same
+terminal and then press Ctrl-C for clean release before restarting. Suspending
+this listener can leave transport keys diverted to a process unable to log them
+until it resumes or disconnects. No production changes were made.
+
+
+### Corrected probe: screensaver appearance and lock/unlock delivery — 2026-10-02
+
+The user completed the lock-screen repeat with the corrected lifecycle handling:
+
+- The probe started with no screensaver owner (screen_active=None). All four
+  actions arrived before locking at +5.247 through +6.538 seconds.
+- At +8.062 seconds the screensaver acquired owner :1.1447. The probe observed
+  an initial inactive snapshot at +8.131 and active=true at +8.275 without
+  terminating or replaying media-key registration.
+- At the reported lock screen, Play, Stop, Previous, and Next all arrived at
+  +10.693 through +12.283 seconds with screen_active=Some(true).
+- Unlocking produced active=false at +17.299 seconds. All four actions arrived
+  again at +19.764 through +21.129 with screen_active=Some(false).
+- This supplied log ends while the probe is still running; it does not establish
+  how this particular run subsequently exited.
+
+This verifies that the corrected probe tolerates screensaver appearance during
+its lifetime and delivers all four physical transport actions across the user's
+lock/unlock cycle. Together with the verified contender expiry/return and the
+separate live idle-exit check, the core delivery/lifecycle prototype checks pass
+on this Cinnamon/X11 system. Real-player interference remains partially checked:
+Spotify did not displace the probe for the reported Play/Previous/Next sequence;
+fresh Brave event evidence remains unreported. Arbitrary registering applications
+can still take priority, as the contender test demonstrates. These findings
+support considering a Cinnamon D-Bus input backend but do not prove exclusive
+ownership or authorize production integration. The existing X11 backend remains
+unchanged and still lacks locked-screen input delivery.
+
+
+### Fresh Brave interference result — 2026-10-02
+
+The user supplied a new ordered log resolving the previously duplicated Brave
+block:
+
+- Before Brave launched, Play, Stop, Previous, and Next reached the probe at
+  +2.273 through +3.393 seconds, with no active screensaver owner.
+- After Brave launched with a YouTube page playing media, Play, Next, Previous,
+  and Play reached the probe at +41.357 through +43.398 seconds. YouTube did
+  not respond, as expected for this log-only listener.
+- After Brave closed, Play, Previous, Next, and Play still reached the probe
+  at +100.489 through +102.556 seconds. No ownership errors were reported.
+
+Brave launch, active YouTube playback, and Brave closure did not displace the
+probe for the supplied Play/Pause, Previous, and Next sequence on this system.
+Stop was verified in the baseline, not in the supplied post-launch/closure
+sequences. Firefox reopening remains untested because the user deliberately
+used an isolated Brave session instead. This finding completes the fresh Brave
+interference evidence requested for this prototype; it does not override the
+known ability of a registering contender to take priority. Production integration
+still requires a decision about the guarantees and handling of listener priority.
+No production capture or routing changes were made.
+
+Sources: installed `/usr/share/cinnamon-screensaver/manager.py`,
+`util/keybindings.py`, and `dbusdepot/keybindingHandlerClient.py`;
+<https://github.com/linuxmint/cinnamon-screensaver/blob/master/src/util/keybindings.py>;
+<https://github.com/linuxmint/cinnamon-settings-daemon/blob/master/plugins/media-keys/csd-media-keys-manager.c>.
+
+## Cinnamon D-Bus capture and automatic/manual reclaim — 2026-10-02
+
+The user approved automatic reclaim on relevant events plus a manual reclaim
+capability, accepting best-effort listener priority rather than exclusive
+ownership. This authorization follows the successful physical-key, lock/unlock,
+contender expiry/return, Spotify, and Brave prototype checks recorded above.
+
+Implementation:
+
+- The default input backend is now `cinnamon-dbus`, registering through
+  org.gnome.SettingsDaemon's existing MediaKeys API. `src/input/cinnamon_dbus.rs`
+  owns an independent session-bus connection, singleton capture name, bounded
+  event queue, subscriptions, owner checks, and registration lifecycle. No new
+  dependencies or configuration fields were added. Core selection and routing
+  remain desktop independent; the GUI still uses only the daemon's public API.
+- Backend selection is a process option, `--input-backend cinnamon-dbus|x11`,
+  and is not persisted. Legacy X11 remains explicitly available, with all prior
+  binding/journal safety and capture tests retained. Login startup continues
+  to invoke --serve and therefore uses the new default. No live installation
+  or login entries were changed.
+- D-Bus capture holds the existing per-state-directory capture/recovery lock
+  and recovers any legacy journal before registering. It does not clear or
+  otherwise write Cinnamon bindings and creates no recovery journal of its
+  own. Clean stop releases registration and closes the connection. Cinnamon
+  watches owner disappearance for crash cleanup. Startup registration errors
+  also attempt release because a timeout does not prove non-application.
+- Capture remains limited to the established Cinnamon/X11 environment. It
+  requires the normal plain transport bindings. Custom or disabled transport
+  shortcuts are preserved and produce an actionable fault suggesting legacy
+  X11 capture: D-Bus notifications cannot distinguish custom accelerators from
+  hardware media keys. Runtime shortcut edits also fault and release capture
+  without overwriting the edits. Volume/mute and unsupported actions are ignored
+  by the backend. Locked delivery requires Cinnamon's lock-screen shortcuts
+  to be allowed; the daemon does not change that setting.
+- Automatic reclaim occurs while capture is active after successful selection
+  requests (including clear/reselection), admitted player arrivals (including
+  startup admission/additional instances), and screen activation. Screen
+  activation also includes an unlocked screensaver. These are registration
+  refreshes, not selection events; MRO and sticky-selection semantics are
+  unchanged. No periodic priority refresh, ownership-loss detection, or command
+  replay was added.
+- Screensaver signals follow its well-known name across idle exits/restarts;
+  merely monitoring them does not activate the screensaver. Media-key service
+  owner loss/replacement faults capture rather than directing registration to
+  a replacement silently. Retry enabling capture after service availability
+  returns. Known reclaim failures stop input and publish a capture fault while
+  retaining saved capture intent. Diagnostic runs exit on automatic reclaim
+  failure; serving keeps discovery/API access available.
+- Added ReclaimMediaKeys() -> State to the existing version 1 API; all record
+  signatures are unchanged. This requires active capture, does not save or
+  change selection/preferences, and returns CaptureFailed when inactive or
+  on registration failure. Legacy X11 reclaim is a no-op for its existing
+  grabs. A saved selection can be applied even if its following automatic
+  reclaim fails; clients must inspect state on errors. Failed selection saves
+  do not trigger that request's reclaim.
+- The independent tray adds “Reclaim media keys”, enabled only with active
+  capture, through its owner-pinned request path. Faulted capture retains the
+  existing retry-enable controls. Public XML/API documentation and README
+  describe best-effort priority, recovery, backend choice, and a busctl reclaim
+  example. Backend choice does not require a tray implementation dependency.
+- D-Bus input follows Cinnamon's logical key notifications. Unlike legacy X11,
+  this API has no key-release/device information for local held-key repeat
+  suppression. README scopes the old suppression guarantee to legacy X11;
+  physical held-key behaviour needs live acceptance with the new backend.
+
+Verification:
+
+- All 94 workspace tests passed: the 90 existing tests, one additional CLI test,
+  one tray menu test, and two new private-bus capture integration tests.
+  The tray-client integration also verifies inactive reclaim errors remain
+  visible without losing daemon connectivity. The standalone probe regression
+  test was verified earlier and is separate from this workspace-test count.
+- New real-daemon/mock-Cinnamon coverage verifies all five key names/four
+  transport actions, selected-owner routing, unsupported input filtering,
+  unavailable selection, competitor takeover, manual reclaim without preference
+  writes, reclaim after selection/arrival/screen activation, screensaver owner
+  return, manual and automatic registration failure/retry, capture intent
+  retention, media-key service loss/retry, disabled capture, and SIGTERM cleanup.
+- Separate native isolated-settings coverage verifies startup custom-shortcut
+  refusal, preservation, enabling after compatible settings return, runtime
+  external-edit faults, and disabled recovery without overwriting user edits.
+  Legacy Xvfb/settings tests still exercise grabs, repeat suppression, crash
+  journals, conflicts, and startup/manual restoration using the explicit X11
+  backend.
+- Workspace build, all-target Clippy with warnings denied, formatting,
+  git diff --check, and API XML parsing passed. Tests used private buses,
+  temporary configuration/state/settings, and isolated Xvfb where applicable.
+  No live daemon/tray restart, desktop capture changes, preferences, login
+  entries, or playback commands were performed for this implementation.
+
+Implementation and automated verification are complete. Live production
+routing/MRO, locked-screen control, and manual/automatic reclaim under contender
+competition passed as recorded below. Subsequent live acceptance also passed
+volume/mute, held-key behaviour, clean disable/re-enable/tray quit, saved intent
+and tray reconnection across daemon restart, and MRO exclusions. Installation
+and autostart registration are complete; actual login startup and autostart
+removal remain untested. A tray-menu-open input interruption remains unresolved. Earlier tray/CLI
+lifecycle checks remain valid for the versions tested; they do not establish all
+new-backend live behaviour. Other desktops/Wayland remain outside verified
+coverage. Priority remains best effort: another later registration can win
+without notifying the router.
+
+### First production acceptance run had capture disabled — 2026-10-02
+
+The user reported that the tray selection followed MRO but hardware keys
+continued controlling the previously active application. The supplied complete
+startup/discovery log contained no CAPTURE READY, CAPTURE RECLAIMED, capture
+fault, or COMMAND lines. Read-only inspection of the saved configuration found
+capture_enabled=false, auto_select_new=true, and Brave selected by fallback
+Identity. The reported run therefore supports capture being disabled, with
+Cinnamon's normal media-key routing continuing independently of the tray/MRO
+selection. It does not establish a failure of active router capture or reclaim.
+
+Brave became available only after playback started on its restored YouTube page.
+This is consistent with the settled MPRIS discovery boundary: browser launch or
+a restored page alone does not guarantee a usable player. MRO reacts to validated
+player appearance, not process launch or individual tabs.
+
+Added an unconditional startup CAPTURE STATUS line showing backend, saved/CLI
+capture intent, and actual state, including disabled capture, to make this
+condition visible in terminal diagnostics. Capture remains opt-in; no live saved
+preferences or capture state were changed by the assistant. Repeat acceptance
+by checking Capture media keys in the tray or launching --serve --capture, which
+explicitly saves enabled intent. Expect CAPTURE READY, automatic CAPTURE RECLAIMED
+messages on eligible events, and COMMAND outcomes when routing keys. The existing
+production acceptance checklist remains outstanding until tested with capture
+active.
+
+### Production routing/MRO and locked-screen acceptance — reported 2026-10-02
+
+The user confirmed capture was accidentally disabled in the first acceptance
+run. After relaunching Media Router and enabling capture, repeating the
+Brave/Spotify launch-and-close sequence produced expected MRO selection and
+captured media-key routing. The user also confirmed that production capture
+persists at the lock screen. This successful report was recovered from the
+conversation after the interrupted documentation update/RustRover restart;
+it had not previously been saved in this document.
+
+This resolves the original locked-screen input limitation on the tested
+Cinnamon/X11 system. The prior capture-disabled run is not evidence of a
+backend/reclaim defect.
+
+### Production contender takeover/reclaim acceptance — 2026-10-03
+
+The user stopped and restarted the contender between each case, confirmed
+its takeover, then reported successful reclaim through all tested triggers:
+
+- Manual “Reclaim media keys”.
+- Selecting a different player.
+- Reselecting the same player.
+- Launching a new player with MRO enabled.
+- Launching a new player with MRO disabled: Brave was selected and responding;
+  the contender then received keys instead; launching Spotify stopped contender
+  key logging and restored key control to Brave, preserving the prior selection.
+- Screen locking.
+
+All outcomes matched the user's expected behaviour. These results establish
+production manual reclaim and the tested automatic selection/player-arrival/
+lock triggers under competition, not merely natural return after contender
+exit. The MRO-disabled sequence confirms that priority refresh is independent
+of selection policy: player arrival reclaims input without selecting that new
+application when MRO is disabled.
+
+No code changes were needed for these acceptance results. Remaining live
+checks are listed above; neither this result nor the earlier prototype changes
+the known best-effort priority limit or establishes other-desktop support.
+
+
+### Remaining desktop acceptance results — 2026-10-05
+
+The user reported the remaining manual checklist results:
+
+- Volume/mute: with capture enabled, MRO disabled, Spotify playing, and no
+  contender, controls changed global OS volume before, during, and after lock.
+- Held keys: each transport key acted on initial press only, with no additional
+  actions during an extended hold, both unlocked and locked. Rapid separate
+  taps executed separate commands without unexpected behaviour. This is an
+  observed result on the tested system, not a new repeat-suppression guarantee
+  for Cinnamon's D-Bus API.
+- Disable/re-enable and tray quit/relaunch: all checklist steps behaved as
+  expected.
+- MRO exclusions: all checklist steps behaved as expected.
+- Persistence and daemon reconnection: all checklist steps behaved as expected,
+  including the saved settings and unavailable-selection cases.
+- Installed binaries and autostart registration: completed. The user deferred
+  actual startup verification until the next reboot. Login startup and the
+  subsequent autostart removal check remain incomplete.
+
+Additional reported issue: transport keys do not respond while the tray menu is
+open; closing it immediately restores prior key control. The tray exports a
+host-rendered menu and its code has no menu-open action that suspends capture.
+A host menu keyboard grab is a plausible cause, not a confirmed diagnosis.
+No live comparison with another tray menu or key-delivery trace was performed.
+This issue remains open separately from the passed lifecycle checks.
+
+No implementation changes were made for these results. Other desktops/Wayland
+remain outside verified coverage.
+
 ## License decision — 2026-09-26
 
 The user selected Apache License 2.0 for the project. The full, unmodified
@@ -1900,8 +2359,10 @@ the original license text and should remain unchanged.
   actual login startup has not been tested. The Rust tray compatibility test
   passed the revised portability criteria. Full Milestone 8 was authorized and
   its independent client implementation and automated checks are complete;
-  core production-menu checks passed on Cinnamon/X11; live exclusions, daemon
-  restart/reconnection, and installation/login checks remain pending.
+  core production-menu checks, live exclusions, and daemon restart/reconnection
+  passed on Cinnamon/X11. Installation and autostart registration are complete;
+  actual login startup and autostart removal remain pending. The reported
+  tray-menu-open key interruption remains unresolved.
 - Explain each step as a Rust development tutorial, including the purpose
   of code, tools, and verification commands. Keep tutorial explanations
   in the chat exchange, not in `README.md`.

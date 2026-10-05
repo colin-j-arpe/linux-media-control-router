@@ -199,6 +199,20 @@ impl ksni::Tray for Tray {
                     .into(),
                 );
             }
+            menu.push(
+                StandardItem {
+                    label: "Reclaim media keys".into(),
+                    enabled: enabled
+                        && self
+                            .view
+                            .state
+                            .as_ref()
+                            .is_some_and(|s| s.capture.status == "enabled"),
+                    activate: Box::new(|tray: &mut Self| tray.send(Action::Reclaim)),
+                    ..Default::default()
+                }
+                .into(),
+            );
             let auto = !settings.auto_select_new;
             menu.push(
                 CheckmarkItem {
@@ -326,6 +340,28 @@ mod tests {
             inbox,
         )
     }
+    #[test]
+    fn reclaim_is_only_enabled_for_active_capture_and_uses_the_api_owner() {
+        let (mut tray, mut inbox) = fixture();
+        let find = |tray: &Tray| {
+            tray.menu()
+                .into_iter()
+                .find_map(|item| match item {
+                    MenuItem::Standard(item) if item.label == "Reclaim media keys" => Some(item),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert!(!find(&tray).enabled);
+        tray.view.state.as_mut().unwrap().capture.status = "enabled".into();
+        let item = find(&tray);
+        assert!(item.enabled);
+        (item.activate)(&mut tray);
+        let command = inbox.try_recv().unwrap();
+        assert_eq!(command.owner, ":1.7");
+        assert!(matches!(command.action, Action::Reclaim));
+    }
+
     #[test]
     fn absent_selection_is_retained_and_empty_identity_is_selectable() {
         let (mut tray, mut inbox) = fixture();
