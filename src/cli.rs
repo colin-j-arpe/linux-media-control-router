@@ -268,6 +268,7 @@ mod tests {
             interactive: true,
             capture: None,
             serve: false,
+            backend: Backend::CinnamonDbus,
         };
         assert_eq!(
             args(&["--select", "spotify", "--interactive"]).unwrap(),
