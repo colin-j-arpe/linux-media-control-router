@@ -808,8 +808,8 @@ quit/relaunch, daemon restart/reconnection, volume/mute, held-key behaviour,
 locked-screen control, and manual/automatic reclaim under contender competition.
 The user committed the lock-screen changes and merged them into `main`.
 
-Installation and autostart registration are complete. Actual startup after
-login/reboot and autostart removal remain the final acceptance checks. Other
+Installation, actual startup after reboot, and autostart removal passed live
+acceptance. No planned milestone acceptance checks remain outstanding. Other
 desktops and Wayland remain outside verified coverage.
 
 The debug branch investigated media-key interruption while GTK tray menus are
@@ -2332,6 +2332,29 @@ This issue remains open separately from the passed lifecycle checks.
 No implementation changes were made for these results. Other desktops/Wayland
 remain outside verified coverage.
 
+## Final startup acceptance and initial release preparation — 2026-10-05
+
+The user completed both remaining autostart checks. After reboot, pgrep found
+an automatically started daemon and the independently launched installed tray
+connected to it. Autostart removal returned success; after a subsequent reboot,
+pgrep found no daemon. Autostart is currently disabled. No live startup entry
+or preferences were changed during release preparation.
+
+All planned milestone implementations and live acceptance checks are complete
+on the verified Cinnamon/X11 system. The user authorized initial release
+preparation on branch `initial-release`. Both packages already declare 0.1.0;
+that version is retained. CHANGELOG.md contains release notes, README.md adds
+binary archive installation, and docs/RELEASE.md records validation, packaging,
+and publication steps. Build assets are staged under ignored target/release-dist.
+
+All 94 workspace tests, all-target Clippy with warnings denied, formatting,
+and the optimized workspace build passed. Both release binaries passed --help
+smoke checks and their shared libraries resolved on Linux Mint 22.3 x86-64.
+The archive is specific to that build environment; broader compatibility is
+not claimed. No release has been published and no Git commits, tags, or pushes
+were performed. The user handles Git actions; remote publication remains a
+separate action after reviewing the prepared release.
+
 ## License decision — 2026-09-26
 
 The user selected Apache License 2.0 for the project. The full, unmodified
@@ -2348,9 +2371,8 @@ the original license text and should remain unchanged.
 
 - Proceed incrementally, with user approval before each new milestone.
   All milestone implementations (1–8, plus 6.1) and automated verification
-  are complete. Live Cinnamon/X11 acceptance passed, except actual login
-  startup and autostart removal, which remain pending. Installation and
-  autostart registration are complete. The tray-menu-open interruption is
+  are complete. All planned live Cinnamon/X11 acceptance checks passed, including actual
+  login startup and autostart removal. Autostart is currently disabled. The tray-menu-open interruption is
   accepted as a desktop limitation; no workaround is planned. MRP and
   individual browser-tab selection are deferred features requiring approval
   before implementation.

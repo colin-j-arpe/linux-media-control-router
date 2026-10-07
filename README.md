@@ -4,6 +4,32 @@ A Linux media-control router intended to let users choose which running
 media application receives Play/Pause, Stop, Previous, and Next commands.
 The initial target is Linux Mint Cinnamon on X11.
 
+## Installing a release archive
+
+The initial release is `0.1.0`. See [release notes](CHANGELOG.md) for features
+and limitations. Binary archives are built on Linux Mint 22.3 for x86-64;
+other distributions and Wayland have not been verified. The daemon requires
+GLib/GIO runtime libraries, Cinnamon's media-key settings schema, and an X11
+session. The tray requires a StatusNotifier-compatible host.
+
+Download the archive and its `SHA256SUMS` file into the same directory. Verify
+and extract them:
+
+```sh
+sha256sum -c SHA256SUMS
+tar -xzf media-router-0.1.0-linuxmint22.3-x86_64.tar.gz
+cd media-router-0.1.0-linuxmint22.3-x86_64
+install -Dm755 bin/media-router "$HOME/.local/bin/media-router"
+install -Dm755 bin/media-router-tray "$HOME/.local/bin/media-router-tray"
+```
+
+When updating an existing installation, stop its daemon and quit its tray
+before replacing either executable. Saved preferences are retained. Run
+`$HOME/.local/bin/media-router --serve` and, in a separate terminal,
+`$HOME/.local/bin/media-router-tray`. Enable **Capture media keys** in the tray;
+capture is opt-in. Login startup is also opt-in; see [Starting at login](#starting-at-login).
+The autostart entry starts only the daemon, so launch the tray separately.
+
 ## Building from source
 
 Install Rust using rustup. The repository's `rust-toolchain.toml` selects
