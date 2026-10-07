@@ -38,7 +38,7 @@ async fn exit(process: &mut Process) -> std::process::ExitStatus {
     .unwrap()
 }
 #[tokio::test]
-async fn no_host_duplicate_instance_and_menu_quit() {
+async fn no_host_wait_for_late_host_duplicate_instance_and_menu_quit() {
     let mut bus = Process(
         Command::new("dbus-daemon")
             .args(["--session", "--nofork", "--print-address=1"])
@@ -50,19 +50,83 @@ async fn no_host_duplicate_instance_and_menu_quit() {
     BufReader::new(bus.0.stdout.take().unwrap())
         .read_line(&mut address)
         .unwrap();
-    let spawn = || {
+    let spawn = |wait_for_host| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_media-router-tray"));
+        if wait_for_host {
+            command.arg("--wait-for-host");
+        }
         Process(
-            Command::new(env!("CARGO_BIN_EXE_media-router-tray"))
+            command
                 .env("DBUS_SESSION_BUS_ADDRESS", address.trim())
-                .stderr(Stdio::null())
+                .stderr(if wait_for_host {
+                    Stdio::piped()
+                } else {
+                    Stdio::null()
+                })
                 .spawn()
                 .unwrap(),
         )
     };
-    let mut no_host = spawn();
+    let mut no_host = spawn(false);
     assert!(!exit(&mut no_host).await.success());
+    let mut tray = spawn(true);
+    let observer = zbus::connection::Builder::address(address.trim())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let dbus = zbus::fdo::DBusProxy::new(&observer).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if dbus
+                .name_has_owner("org.mediarouter.Tray1".try_into().unwrap())
+                .await
+                .unwrap()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let stderr = tray.0.stderr.take().unwrap();
+    let (stderr_sender, stderr_receiver) = tokio::sync::oneshot::channel();
+    let stderr_task = tokio::task::spawn_blocking(move || {
+        let mut sender = Some(stderr_sender);
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            if let Some(sender) = sender.take() {
+                let _ = sender.send(line);
+            }
+        }
+    });
+    let line = tokio::time::timeout(Duration::from_secs(5), stderr_receiver)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(line.contains("Waiting for the desktop tray host"), "{line}");
+    assert!(tray.0.try_wait().unwrap().is_none());
     let (sender, mut registrations) = mpsc::channel(2);
-    let host = zbus::connection::Builder::address(address.trim())
+    let mut host = zbus::connection::Builder::address(address.trim())
+        .unwrap()
+        .name("org.kde.StatusNotifierWatcher")
+        .unwrap()
+        .serve_at("/StatusNotifierWatcher", Host(sender.clone()))
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let name = tokio::time::timeout(Duration::from_secs(5), registrations.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut duplicate = spawn(false);
+    assert!(!exit(&mut duplicate).await.success());
+    host.close().await.unwrap();
+    host = zbus::connection::Builder::address(address.trim())
         .unwrap()
         .name("org.kde.StatusNotifierWatcher")
         .unwrap()
@@ -71,13 +135,12 @@ async fn no_host_duplicate_instance_and_menu_quit() {
         .build()
         .await
         .unwrap();
-    let mut tray = spawn();
-    let name = tokio::time::timeout(Duration::from_secs(5), registrations.recv())
+    let returned_name = tokio::time::timeout(Duration::from_secs(5), registrations.recv())
         .await
         .unwrap()
         .unwrap();
-    let mut duplicate = spawn();
-    assert!(!exit(&mut duplicate).await.success());
+    assert_eq!(returned_name, name);
+    assert!(tray.0.try_wait().unwrap().is_none());
     let menu = zbus::Proxy::new(&host, name.as_str(), "/MenuBar", "com.canonical.dbusmenu")
         .await
         .unwrap();
@@ -123,6 +186,7 @@ async fn no_host_duplicate_instance_and_menu_quit() {
         .await
         .unwrap();
     assert!(exit(&mut tray).await.success());
+    stderr_task.await.unwrap();
 }
 #[test]
 fn help_and_invalid_arguments_do_not_need_a_bus() {

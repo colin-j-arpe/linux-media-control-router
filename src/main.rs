@@ -56,7 +56,10 @@ async fn main() -> ExitCode {
                 .and_then(|directory| media_router::autostart::install(&directory, &executable))
             {
                 Ok(path) => {
-                    println!("Autostart installed: {}", path.display());
+                    println!(
+                        "Daemon and tray autostart installed in: {}",
+                        path.parent().unwrap().display()
+                    );
                     ExitCode::SUCCESS
                 }
                 Err(error) => {
@@ -73,9 +76,9 @@ async fn main() -> ExitCode {
                     println!(
                         "{}",
                         if removed {
-                            "Autostart entry removed. The running daemon is unchanged."
+                            "Autostart entries removed. The running daemon and tray are unchanged."
                         } else {
-                            "No personal autostart entry is installed."
+                            "No personal autostart entries are installed."
                         }
                     );
                     ExitCode::SUCCESS

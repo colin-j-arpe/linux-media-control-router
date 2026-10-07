@@ -28,7 +28,9 @@ before replacing either executable. Saved preferences are retained. Run
 `$HOME/.local/bin/media-router --serve` and, in a separate terminal,
 `$HOME/.local/bin/media-router-tray`. Enable **Capture media keys** in the tray;
 capture is opt-in. Login startup is also opt-in; see [Starting at login](#starting-at-login).
-The autostart entry starts only the daemon, so launch the tray separately.
+The published `0.1.0` autostart command starts only the daemon. Paired daemon/tray
+autostart described below is an unreleased change; build the updated source
+to use it.
 
 ## Building from source
 
@@ -70,9 +72,10 @@ target/debug/media-router-tray
 The tray requires a StatusNotifier-compatible host on the session bus.
 Right-click the blue play icon on Cinnamon. Other hosts may also support
 left-click; menu opening and dismissal follow the desktop's conventions.
-The tray does not start the daemon or install login entries. The existing
-`--install-autostart` command starts only the daemon. To install the tray
-executable separately, use `cargo install --locked --path crates/tray`.
+The tray does not start the daemon or install login entries. The
+`--install-autostart` command registers both the daemon and its sibling tray
+executable for login startup (an unreleased change after `0.1.0`). To install
+the tray executable separately, use `cargo install --locked --path crates/tray`.
 
 The menu provides:
 
@@ -94,9 +97,12 @@ the refreshed state before trying again. Preferences are saved by the daemon.
 The capture backend still requires Cinnamon/X11 regardless of tray support.
 
 The tray reconnects when the daemon starts or restarts, and discards actions
-for an old daemon. If the tray host is absent at startup, it exits with an
-error. If the host disappears later, the tray reports that and exits; restart
-it when the host returns. After a session-bus failure, restart the tray too.
+for an old daemon. Login startup uses `--wait-for-host`: the tray stays running
+while the host initializes and reconnects if it disappears and returns. If no
+host ever appears, the tray remains waiting without an icon. Manual launches
+without that flag exit with an error if the host is absent; if it disappears
+later, restart the tray when the host returns. After a session-bus failure,
+restart the tray too.
 Only one instance of this tray client may run on a session bus.
 
 The v1 exclusions API replaces the whole list. The tray rereads it before an
@@ -439,19 +445,25 @@ save failures are also logged. See the API reference for retry semantics.
 
 ## Starting at login
 
-Build and install the executable in a stable location, then explicitly
-register its absolute path. For a per-user installation:
+Build and install both executables beside each other in a stable location,
+then explicitly register the daemon's absolute path. For a per-user installation:
 
 ```sh
-cargo build --release --locked
+cargo build --release --workspace --locked
 install -Dm755 target/release/media-router "$HOME/.local/bin/media-router"
+install -Dm755 target/release/media-router-tray "$HOME/.local/bin/media-router-tray"
 "$HOME/.local/bin/media-router" --install-autostart "$HOME/.local/bin/media-router"
 ```
 
-This creates `$XDG_CONFIG_HOME/autostart/media-router.desktop`, normally
-`~/.config/autostart/media-router.desktop`. The entry launches the supplied
-executable with `--serve` at the next Cinnamon login, using saved preferences.
-Installation does not start a daemon immediately. Hardware capture still
+This creates two managed entries under `$XDG_CONFIG_HOME/autostart` (normally
+`~/.config/autostart`): `media-router.desktop` launches the daemon with `--serve`,
+and `media-router-tray.desktop` launches the sibling `media-router-tray` with
+`--wait-for-host`. Both start without terminals at the next Cinnamon login.
+The tray can start before the daemon; it connects when the daemon is ready.
+Saved preferences determine capture and selection. Installation does not
+launch either program immediately. Run the command again to upgrade an old
+daemon-only entry. If the sibling tray executable is missing or invalid,
+installation fails without changing an existing entry. Hardware capture still
 requires Cinnamon on X11 and an enabled capture preference.
 
 Use an installed executable rather than a file under Cargo's `target`
@@ -460,18 +472,19 @@ UTF-8, and point to an executable file; control characters and `=` are not
 supported. Spaces and quoted characters are escaped by the installer.
 If you relocate the executable, rerun installation with the new path.
 
-The installer can update its own entry. It refuses to replace or remove
-an unrecognized entry or a symlink at that filename; inspect and move such
+The installer can update its own entries. It refuses to replace or remove
+an unrecognized entry or a symlink at either filename; inspect and move such
 an entry yourself if you want the router to manage it.
 
-To remove the personal login entry:
+To remove both personal login entries:
 
 ```sh
 "$HOME/.local/bin/media-router" --remove-autostart
 ```
 
-Removal leaves the running daemon and saved preferences intact. Stop the
-daemon cleanly before removing its executable; recover outstanding binding
+Removal leaves the running daemon, tray, and saved preferences intact.
+It also supports removing an old daemon-only entry. Stop the daemon cleanly
+and quit the tray before removing their executables; recover outstanding binding
 changes first if it crashed. Removing an already absent entry is harmless.
 These commands do not require a running session bus or X server.
 

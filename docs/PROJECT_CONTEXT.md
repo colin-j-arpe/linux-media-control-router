@@ -824,6 +824,12 @@ MRP and selecting individual browser tabs with media content are deferred
 features, not outstanding v1 milestones. No implementation is authorized for
 either. No Git commits or pushes have been made by the assistant.
 
+Version 0.1.0 was published, as reported by the user on 2026-10-07. The current
+follow-up on `feature/full-autostart` pairs daemon and tray login registration.
+Implementation and 96 workspace tests pass; live paired-login and removal
+acceptance remain pending. See the follow-up record below. The user's actual
+installed binaries and autostart entries have not been changed by the assistant.
+
 Before adding dependencies, verify current Rust crate choices and
 versions rather than relying on old examples.
 
@@ -2354,6 +2360,63 @@ The archive is specific to that build environment; broader compatibility is
 not claimed. No release has been published and no Git commits, tags, or pushes
 were performed. The user handles Git actions; remote publication remains a
 separate action after reviewing the prepared release.
+
+## Paired daemon/tray autostart — 2026-10-07
+
+The user reported publishing 0.1.0 at
+<https://github.com/colin-j-arpe/linux-media-control-router/releases/tag/v0.1.0>
+and authorized installation convenience work: both daemon and tray should
+appear after login without manual terminal launches. Work resumed on
+`feature/full-autostart` after RustRover shut down; the diff preserved the
+implementation, tests, and end-user documentation changes.
+
+Implementation:
+
+- The existing --install-autostart command accepts the daemon's absolute path
+  and finds media-router-tray beside it. Both executable paths are validated
+  before creating entries. It installs media-router.desktop with --serve and
+  media-router-tray.desktop with --wait-for-host. Both entries use Terminal=false
+  and OnlyShowIn=X-Cinnamon. No launcher shell or runtime dependency was added.
+- Daemon and tray remain independent processes. Startup order is unrestricted:
+  the existing tray client reconnects when the daemon becomes available.
+  --wait-for-host uses ksni's existing support for late watcher availability;
+  the tray waits for the desktop tray host and re-registers after host restart.
+  If no host ever appears, it remains waiting without an icon. Manual launches
+  without the flag retain their prior missing-host exit behaviour.
+- Reinstall upgrades a managed daemon-only entry. Removal handles either the
+  pair or a legacy daemon-only entry. Both destinations are checked before
+  changes, preserving unrelated files and rejecting symlinks. Installation
+  rolls back ordinary write failures; two files are not power-loss atomic.
+  Removal and installation do not start/stop programs or change preferences.
+- README installation instructions build/install both workspace executables;
+  CHANGELOG records this as Unreleased. RELEASE.md distinguishes the published
+  0.1.0 assets from later source changes. Package versions remain unchanged
+  pending a separate next-release decision.
+
+Verification:
+
+- All 96 workspace tests passed (94 existing plus two autostart unit cases).
+  Paired CLI tests use temporary XDG/HOME directories and no live bus/display.
+  Coverage includes sibling validation, preservation/rollback on failure,
+  legacy upgrade/removal, and refusal to change unrelated entries.
+- The tray lifecycle integration on a private bus verifies manual failure
+  without a host, actual waiting before host appearance, subsequent host
+  registration, host disappearance/return, duplicate exclusion, and menu Quit.
+- All-target Clippy with warnings denied, formatting, optimized workspace
+  build, release help smoke checks, and git diff whitespace validation passed.
+  Checks were repeated after recovery from the IDE shutdown.
+
+Live acceptance remains: stop the old daemon and quit its tray; install both
+new release binaries into the same stable directory; rerun --install-autostart;
+reboot/login without manually launching either program. Confirm one daemon and
+one tray process, an automatically visible/connected icon, saved preferences,
+and playback control. Remove autostart and verify both entries are gone;
+running programs remain unaffected, and neither starts after the next login.
+Old 0.1.0 paired-startup expectations do not apply: it starts only the daemon.
+
+No live installed binaries, login entries, or preferences were changed. No
+Git commits, tags, or pushes were performed by the assistant. The prior v1
+milestone acceptance results remain valid for the version tested.
 
 ## License decision — 2026-09-26
 

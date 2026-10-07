@@ -1,4 +1,13 @@
-# Preparing release 0.1.0
+# Release preparation
+
+Version `0.1.0` has been published, as reported by the user on 2026-10-07:
+<https://github.com/colin-j-arpe/linux-media-control-router/releases/tag/v0.1.0>.
+The instructions below describe that release. Paired daemon/tray autostart is
+an unreleased change recorded in CHANGELOG.md; select a new version and update
+archive names before packaging the next release. Do not replace the published
+0.1.0 assets with a build containing subsequent changes.
+
+## Preparing release 0.1.0
 
 Both Cargo packages already declare version `0.1.0`. Release notes are in
 [CHANGELOG.md](../CHANGELOG.md). This is an initial Cinnamon/X11 release;
