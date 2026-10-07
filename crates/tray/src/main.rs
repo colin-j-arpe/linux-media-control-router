@@ -8,11 +8,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         println!(
-            "Usage: media-router-tray\n\nConnect to media-router --serve on the session bus.\nRequires a StatusNotifier tray host. Right-click to open the menu.\nQuitting closes only the tray, not the daemon. No preferences are stored by this client."
+            "Usage: media-router-tray [--wait-for-host]\n\nConnect to media-router --serve on the session bus.\n--wait-for-host waits for the desktop tray host during login startup.\nRequires a StatusNotifier tray host. Right-click to open the menu.\nQuitting closes only the tray, not the daemon. No preferences are stored by this client."
         );
         return Ok(());
     }
-    if !args.is_empty() {
+    let wait_for_host = args.len() == 1 && args[0] == "--wait-for-host";
+    if !args.is_empty() && !wait_for_host {
         return Err("unknown arguments; use --help".into());
     }
     let connection = zbus::connection::Builder::session()?
@@ -35,7 +36,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         view: View::default(),
         commands,
         quit: quit.clone(),
+        wait_for_host,
     }
+    .assume_sni_available(wait_for_host)
     .spawn()
     .await?;
     let worker = tokio::spawn(client::run(connection.clone(), inbox, views));

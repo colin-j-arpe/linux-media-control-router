@@ -15,6 +15,15 @@ fn cli_installs_and_removes_using_xdg_and_home_without_bus_access() {
     );
     fs::create_dir(&directory.0).unwrap();
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_media-router"));
+    let installed_bin = directory.0.join("installed");
+    fs::create_dir(&installed_bin).unwrap();
+    for name in ["media-router", "media-router-tray"] {
+        use std::os::unix::fs::PermissionsExt;
+        let path = installed_bin.join(name);
+        fs::write(&path, "fixture; never launched").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let installed_daemon = installed_bin.join("media-router");
     for xdg in [
         Some(directory.0.join("xdg")),
         Some(PathBuf::from("relative-ignored")),
@@ -39,7 +48,7 @@ fn cli_installs_and_removes_using_xdg_and_home_without_bus_access() {
         };
         let installed = command()
             .arg("--install-autostart")
-            .arg(&executable)
+            .arg(&installed_daemon)
             .output()
             .unwrap();
         assert!(
@@ -54,7 +63,7 @@ fn cli_installs_and_removes_using_xdg_and_home_without_bus_access() {
             .unwrap();
         assert_eq!(
             keyfile.string("Desktop Entry", "TryExec").unwrap().as_str(),
-            executable.to_str().unwrap()
+            installed_daemon.to_str().unwrap()
         );
         assert_eq!(
             keyfile
@@ -69,10 +78,22 @@ fn cli_installs_and_removes_using_xdg_and_home_without_bus_access() {
                 .unwrap()
                 .ends_with(" --serve")
         );
+        let tray_entry = base.join("autostart/media-router-tray.desktop");
+        keyfile
+            .load_from_file(&tray_entry, gio::glib::KeyFileFlags::NONE)
+            .unwrap();
+        assert!(
+            keyfile
+                .string("Desktop Entry", "Exec")
+                .unwrap()
+                .ends_with(" --wait-for-host")
+        );
+        assert!(!keyfile.boolean("Desktop Entry", "Terminal").unwrap());
         assert!(!base.join("media-router/config.json").exists());
         let removed = command().arg("--remove-autostart").output().unwrap();
         assert!(removed.status.success());
         assert!(!entry.exists());
+        assert!(!tray_entry.exists());
         assert!(
             command()
                 .arg("--remove-autostart")

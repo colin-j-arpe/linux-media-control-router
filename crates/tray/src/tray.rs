@@ -11,6 +11,7 @@ pub struct Tray {
     pub view: View,
     pub commands: mpsc::Sender<Command>,
     pub quit: Arc<Notify>,
+    pub wait_for_host: bool,
 }
 impl Tray {
     fn send(&mut self, action: Action) {
@@ -281,6 +282,10 @@ impl ksni::Tray for Tray {
         menu
     }
     fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
+        if self.wait_for_host {
+            eprintln!("Tray host unavailable: {reason:?}. Waiting for the desktop tray host.");
+            return true;
+        }
         eprintln!(
             "Tray host unavailable: {reason:?}. The daemon is unaffected; restart the tray when a host is available."
         );
@@ -336,6 +341,7 @@ mod tests {
                 view,
                 commands,
                 quit: Arc::new(Notify::new()),
+                wait_for_host: false,
             },
             inbox,
         )

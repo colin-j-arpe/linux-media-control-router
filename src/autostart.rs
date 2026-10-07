@@ -9,6 +9,7 @@ use std::{
 };
 
 const ENTRY: &str = "media-router.desktop";
+const TRAY_ENTRY: &str = "media-router-tray.desktop";
 const GROUP: &str = "Desktop Entry";
 const MANAGED: &str = "X-MediaRouter-Managed";
 
@@ -16,14 +17,58 @@ pub fn directory() -> io::Result<PathBuf> {
     Ok(crate::config::directory()?.with_file_name("autostart"))
 }
 
-/// Register an explicitly chosen installed executable, not the calling build.
+/// Register both explicitly installed programs. The tray must be beside the daemon.
 pub fn install(directory: &Path, executable: &Path) -> io::Result<PathBuf> {
-    let contents = entry(executable)?;
+    let tray = executable.with_file_name("media-router-tray");
+    let entries = [
+        (directory.join(ENTRY), entry(executable)?),
+        (
+            directory.join(TRAY_ENTRY),
+            desktop_entry(&tray, "Media Router Tray", "--wait-for-host")?,
+        ),
+    ];
     create_private_directory(directory)?;
     let _lock = lock(directory)?;
-    let path = directory.join(ENTRY);
-    check_managed(&path)?;
-    let temporary = directory.join(".media-router.desktop.tmp");
+    let mut originals = Vec::new();
+    // Refuse conflicts before changing either entry, including legacy upgrades.
+    for (path, _) in &entries {
+        originals.push(if check_managed(path)? {
+            Some(fs::read_to_string(path)?)
+        } else {
+            None
+        });
+    }
+    for (path, contents) in &entries {
+        if let Err(error) = replace(directory, path, contents) {
+            // Roll back ordinary installation failures, including a failed directory sync.
+            // Two desktop files cannot be committed atomically across a power loss.
+            for ((path, _), original) in entries.iter().zip(&originals) {
+                let restored = match original {
+                    Some(contents) if fs::read_to_string(path).ok().as_ref() == Some(contents) => {
+                        Ok(())
+                    }
+                    Some(contents) => replace(directory, path, contents),
+                    None => remove_file_if_exists(path),
+                };
+                if let Err(rollback) = restored {
+                    return Err(io::Error::other(format!(
+                        "autostart installation failed: {error}; rollback failed for {}: {rollback}; inspect both entries",
+                        path.display()
+                    )));
+                }
+            }
+            File::open(directory)?.sync_all()?;
+            return Err(error);
+        }
+    }
+    Ok(directory.join(ENTRY))
+}
+
+fn replace(directory: &Path, path: &Path, contents: &str) -> io::Result<()> {
+    let temporary = directory.join(format!(
+        ".{}.tmp",
+        path.file_name().unwrap().to_string_lossy()
+    ));
     remove_file_if_exists(&temporary)?;
     let mut file = OpenOptions::new()
         .create_new(true)
@@ -33,14 +78,13 @@ pub fn install(directory: &Path, executable: &Path) -> io::Result<PathBuf> {
     let cleanup = TemporaryFile(temporary);
     file.write_all(contents.as_bytes())?;
     file.sync_all()?;
-    fs::rename(&cleanup.0, &path)?;
+    fs::rename(&cleanup.0, path)?;
     File::open(directory)?.sync_all().map_err(|error| io::Error::other(format!(
         "autostart entry was installed, but directory durability could not be confirmed: {error}"
-    )))?;
-    Ok(path)
+    )))
 }
 
-/// Remove only this tool's personal entry. Running daemons and preferences stay intact.
+/// Remove both managed entries; running programs and preferences stay intact.
 pub fn remove(directory: &Path) -> io::Result<bool> {
     match fs::metadata(directory) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
@@ -48,17 +92,17 @@ pub fn remove(directory: &Path) -> io::Result<bool> {
         Ok(_) => (),
     }
     let _lock = lock(directory)?;
-    let path = directory.join(ENTRY);
-    if !check_managed(&path)? {
-        return Ok(false);
+    let paths = [directory.join(ENTRY), directory.join(TRAY_ENTRY)];
+    let managed = [check_managed(&paths[0])?, check_managed(&paths[1])?];
+    for (path, exists) in paths.iter().zip(managed) {
+        if exists {
+            fs::remove_file(path)?;
+        }
     }
-    fs::remove_file(path)?;
-    File::open(directory)?.sync_all().map_err(|error| {
-        io::Error::other(format!(
-            "autostart entry was removed, but directory durability could not be confirmed: {error}"
-        ))
-    })?;
-    Ok(true)
+    File::open(directory)?.sync_all().map_err(|error| io::Error::other(format!(
+        "autostart entries were removed, but directory durability could not be confirmed: {error}"
+    )))?;
+    Ok(managed.into_iter().any(|exists| exists))
 }
 
 fn lock(directory: &Path) -> io::Result<File> {
@@ -99,6 +143,10 @@ fn check_managed(path: &Path) -> io::Result<bool> {
 }
 
 fn entry(executable: &Path) -> io::Result<String> {
+    desktop_entry(executable, "Media Router", "--serve")
+}
+
+fn desktop_entry(executable: &Path, name: &str, argument: &str) -> io::Result<String> {
     let invalid = |message| io::Error::new(io::ErrorKind::InvalidInput, message);
     if !executable.is_absolute() {
         return Err(invalid("autostart requires an absolute executable path"));
@@ -128,10 +176,11 @@ fn entry(executable: &Path) -> io::Result<String> {
             _ => quoted.push(character),
         }
     }
-    quoted.push_str("\" --serve");
+    quoted.push_str("\" ");
+    quoted.push_str(argument);
     let keyfile = KeyFile::new();
     keyfile.set_string(GROUP, "Type", "Application");
-    keyfile.set_string(GROUP, "Name", "Media Router");
+    keyfile.set_string(GROUP, "Name", name);
     keyfile.set_string(
         GROUP,
         "Comment",
@@ -160,7 +209,9 @@ mod tests {
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
             fs::create_dir(&path).unwrap();
-            Self(path)
+            let directory = Self(path);
+            directory.executable("media-router-tray");
+            directory
         }
         fn executable(&self, name: &str) -> PathBuf {
             let path = self.0.join(name);
@@ -232,6 +283,50 @@ mod tests {
         assert!(install(&directory.autostart(), &executable).is_err());
         assert!(remove(&directory.autostart()).is_err());
         assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn paired_install_validates_tray_and_preserves_both_on_failure() {
+        let directory = Directory::new();
+        let daemon = directory.executable("media-router");
+        let tray = directory.0.join("media-router-tray");
+        fs::remove_file(&tray).unwrap();
+        assert!(install(&directory.autostart(), &daemon).is_err());
+        assert!(!directory.autostart().exists());
+        directory.executable("media-router-tray");
+        install(&directory.autostart(), &daemon).unwrap();
+        let path = directory.autostart().join(TRAY_ENTRY);
+        let keyfile = KeyFile::new();
+        keyfile.load_from_file(&path, KeyFileFlags::NONE).unwrap();
+        assert!(
+            keyfile
+                .string(GROUP, "Exec")
+                .unwrap()
+                .ends_with(" --wait-for-host")
+        );
+        assert!(!keyfile.boolean(GROUP, "Terminal").unwrap());
+        let before = fs::read(directory.autostart().join(ENTRY)).unwrap();
+        fs::create_dir(directory.autostart().join(".media-router-tray.desktop.tmp")).unwrap();
+        assert!(install(&directory.autostart(), &directory.executable("replacement")).is_err());
+        assert_eq!(fs::read(directory.autostart().join(ENTRY)).unwrap(), before);
+        fs::write(&path, "[Desktop Entry]\nName=Other\n").unwrap();
+        assert!(install(&directory.autostart(), &daemon).is_err());
+        assert!(remove(&directory.autostart()).is_err());
+        assert_eq!(fs::read(directory.autostart().join(ENTRY)).unwrap(), before);
+    }
+
+    #[test]
+    fn legacy_daemon_entry_upgrades_and_removes_without_a_tray_entry() {
+        let directory = Directory::new();
+        let daemon = directory.executable("media-router");
+        fs::create_dir(directory.autostart()).unwrap();
+        fs::write(directory.autostart().join(ENTRY), entry(&daemon).unwrap()).unwrap();
+        install(&directory.autostart(), &daemon).unwrap();
+        assert!(directory.autostart().join(TRAY_ENTRY).exists());
+        remove(&directory.autostart()).unwrap();
+        assert!(!directory.autostart().join(TRAY_ENTRY).exists());
+        fs::write(directory.autostart().join(ENTRY), entry(&daemon).unwrap()).unwrap();
+        assert!(remove(&directory.autostart()).unwrap());
     }
 
     #[test]

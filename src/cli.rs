@@ -18,8 +18,8 @@ Watch MPRIS players and report the selected application's availability.
       --input-backend NAME      cinnamon-dbus (default) or x11 (legacy).
   -s, --serve                   Expose the session-bus API; keep running after stdin EOF.
       --restore-bindings        Recover saved Cinnamon bindings and exit.
-      --install-autostart PATH  Install a Cinnamon login entry for this executable.
-      --remove-autostart        Remove the managed personal login entry.
+      --install-autostart PATH  Install daemon and sibling tray Cinnamon login entries.
+      --remove-autostart        Remove both managed personal login entries.
   -h, --help                    Show this help.
 
 Short flags can be grouped: -ics means --interactive --capture --serve.

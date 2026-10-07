@@ -1,5 +1,14 @@
 # Release notes
 
+## Unreleased
+
+- Autostart registration now installs both daemon and tray login entries using
+  executables from the same directory. Removing autostart removes both entries;
+  existing daemon-only entries can be upgraded by rerunning installation.
+- The tray's new `--wait-for-host` mode tolerates a desktop tray host that starts
+  late or restarts. Autostart uses this mode so neither program needs a terminal
+  after login. Manual launches retain their existing missing-host behavior.
+
 ## 0.1.0 — initial release
 
 Media Router lets you choose which media application receives Play/Pause,
