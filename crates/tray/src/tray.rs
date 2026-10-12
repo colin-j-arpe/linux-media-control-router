@@ -14,6 +14,14 @@ pub struct Tray {
     pub wait_for_host: bool,
 }
 impl Tray {
+    /// Queues a user action for the daemon owner currently shown in the tray.
+    ///
+    /// Ignores actions while busy or without an owner. Marks accepted requests busy and exposes
+    /// queue failures in the view.
+    ///
+    /// # Arguments
+    ///
+    /// * `action` — Requested daemon mutation.
     fn send(&mut self, action: Action) {
         let Some(owner) = self.view.owner.clone() else {
             return;
@@ -26,6 +34,12 @@ impl Tray {
             Err(_) => self.view.error = "Request queue unavailable; try again".into(),
         }
     }
+    /// Formats the tray's current selection status.
+    ///
+    /// # Returns
+    ///
+    /// Returns a display message for disconnection, no selection, or the selected application and
+    /// its availability.
     fn status(&self) -> String {
         let Some(state) = &self.view.state else {
             return "Daemon unavailable — start media-router --serve".into();
@@ -48,6 +62,15 @@ impl Tray {
         )
     }
 }
+/// Builds a disabled informational menu row.
+///
+/// # Arguments
+///
+/// * `value` — Text to display in the row.
+///
+/// # Returns
+///
+/// Returns a menu item with no active command.
 fn text(value: impl Into<String>) -> MenuItem<Tray> {
     StandardItem {
         label: value.into(),
@@ -59,18 +82,38 @@ fn text(value: impl Into<String>) -> MenuItem<Tray> {
 impl ksni::Tray for Tray {
     // Optional host convenience; Cinnamon currently opens on right-click only.
     const MENU_ON_ACTIVATE: bool = true;
+    /// Supplies the stable StatusNotifier identifier for the tray.
+    ///
+    /// # Returns
+    ///
+    /// Returns media-router-tray.
     fn id(&self) -> String {
         "media-router-tray".into()
     }
+    /// Supplies the tray's display title.
+    ///
+    /// # Returns
+    ///
+    /// Returns Media Router.
     fn title(&self) -> String {
         "Media Router".into()
     }
+    /// Renders tray icons with a warning badge when the view requires attention.
+    ///
+    /// # Returns
+    ///
+    /// Returns ARGB icons at 24, 32, and 48 pixels.
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         [24, 32, 48]
             .into_iter()
             .map(|size| crate::icon::icon(size, self.view.warning()))
             .collect()
     }
+    /// Builds the tray tooltip from the current selection status.
+    ///
+    /// # Returns
+    ///
+    /// Returns a tooltip containing the tray title and status description.
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {
             title: self.title(),
@@ -78,6 +121,14 @@ impl ksni::Tray for Tray {
             ..Default::default()
         }
     }
+    /// Builds the host-rendered menu from the latest daemon snapshots.
+    ///
+    /// Mutation controls are enabled only while connected and idle. Retains unavailable selections
+    /// and absent exclusions so they remain manageable.
+    ///
+    /// # Returns
+    ///
+    /// Returns informational rows, owner-pinned mutation controls, and the tray Quit action.
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let enabled = self.view.connected() && !self.view.busy;
         let mut menu = vec![text("Media Router"), text(self.status())];
@@ -281,6 +332,16 @@ impl ksni::Tray for Tray {
         );
         menu
     }
+    /// Handles loss or absence of the desktop tray host.
+    ///
+    /// # Arguments
+    ///
+    /// * `reason` — Host availability diagnostic supplied by ksni.
+    ///
+    /// # Returns
+    ///
+    /// Returns true to keep waiting in login startup mode, or false after requesting tray shutdown
+    /// otherwise.
     fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
         if self.wait_for_host {
             eprintln!("Tray host unavailable: {reason:?}. Waiting for the desktop tray host.");

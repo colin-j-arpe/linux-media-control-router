@@ -1,5 +1,19 @@
-/// Direct ARGB artwork keeps the probe independent of installed icon themes.
-/// The badge is composed into the main icon, without relying on host overlays.
+/// Renders a square ARGB transport icon with an optional warning badge.
+///
+/// Direct artwork avoids dependence on installed icon themes or host overlays.
+///
+/// # Arguments
+///
+/// * `size` — Positive pixel width and height, small enough for size * size * 4 to fit in i32.
+/// * `unavailable` — Whether to compose a red warning badge into the icon.
+///
+/// # Returns
+///
+/// Returns the icon dimensions and ARGB pixel data.
+///
+/// # Panics
+///
+/// Panics if pixel-buffer sizing overflows in a checked build or exceeds allocation capacity.
 pub fn icon(size: i32, unavailable: bool) -> ksni::Icon {
     let mut argb_data = Vec::with_capacity((size * size * 4) as usize);
     for y in 0..size {

@@ -13,11 +13,39 @@ const TRAY_ENTRY: &str = "media-router-tray.desktop";
 const GROUP: &str = "Desktop Entry";
 const MANAGED: &str = "X-MediaRouter-Managed";
 
+/// Resolves the per-user XDG autostart directory without creating it.
+///
+/// # Returns
+///
+/// Returns the autostart directory beside the application configuration directory.
+///
+/// # Errors
+///
+/// Returns an error if neither XDG_CONFIG_HOME nor HOME supplies an absolute base path.
 pub fn directory() -> io::Result<PathBuf> {
     Ok(crate::config::directory()?.with_file_name("autostart"))
 }
 
-/// Register both explicitly installed programs. The tray must be beside the daemon.
+/// Registers the daemon and tray client for Cinnamon login.
+///
+/// Creates private desktop entries without starting either program. The pair cannot be committed
+/// atomically across a power loss.
+///
+/// # Arguments
+///
+/// * `directory` — Autostart directory to create or update.
+/// * `executable` — Absolute UTF-8 path to the installed daemon executable; media-router-tray must
+///   be beside it.
+///
+/// # Returns
+///
+/// Returns the path of the daemon desktop entry after both entries are installed.
+///
+/// # Errors
+///
+/// Returns an error for invalid or nonexecutable targets, unrecognized existing entries, lock
+/// contention, or filesystem failures. Ordinary replacement failures trigger rollback; rollback can
+/// also fail.
 pub fn install(directory: &Path, executable: &Path) -> io::Result<PathBuf> {
     let tray = executable.with_file_name("media-router-tray");
     let entries = [
@@ -64,6 +92,25 @@ pub fn install(directory: &Path, executable: &Path) -> io::Result<PathBuf> {
     Ok(directory.join(ENTRY))
 }
 
+/// Replaces one desktop entry through a synchronized temporary file.
+///
+/// # Arguments
+///
+/// * `directory` — Locked directory containing the entry and temporary file.
+/// * `path` — Destination entry path within directory, with a file name.
+/// * `contents` — Complete desktop-entry text to write.
+///
+/// # Returns
+///
+/// Returns Ok(()) after replacement and directory synchronization.
+///
+/// # Errors
+///
+/// Returns a filesystem error; a failed final directory sync means replacement is already visible.
+///
+/// # Panics
+///
+/// Panics if path has no file name.
 fn replace(directory: &Path, path: &Path, contents: &str) -> io::Result<()> {
     let temporary = directory.join(format!(
         ".{}.tmp",
@@ -84,7 +131,22 @@ fn replace(directory: &Path, path: &Path, contents: &str) -> io::Result<()> {
     )))
 }
 
-/// Remove both managed entries; running programs and preferences stay intact.
+/// Removes the managed daemon and tray autostart entries.
+///
+/// Running programs and saved preferences remain unchanged.
+///
+/// # Arguments
+///
+/// * `directory` — Directory containing the autostart desktop entries.
+///
+/// # Returns
+///
+/// Returns Ok(true) if at least one entry was removed, or Ok(false) if neither entry exists.
+///
+/// # Errors
+///
+/// Returns an error if locking fails, an existing entry is unrecognized, or a filesystem operation
+/// fails. An error can occur after an entry has been removed.
 pub fn remove(directory: &Path) -> io::Result<bool> {
     match fs::metadata(directory) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
@@ -105,6 +167,19 @@ pub fn remove(directory: &Path) -> io::Result<bool> {
     Ok(managed.into_iter().any(|exists| exists))
 }
 
+/// Acquires the autostart operation lock without waiting.
+///
+/// # Arguments
+///
+/// * `directory` — Existing autostart directory containing the shared lock file.
+///
+/// # Returns
+///
+/// Returns a file that holds the exclusive lock until dropped.
+///
+/// # Errors
+///
+/// Returns an error if the lock file cannot be opened or another operation holds the lock.
 fn lock(directory: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .create(true)
@@ -121,6 +196,19 @@ fn lock(directory: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// Checks whether an existing entry is a recognized managed desktop file.
+///
+/// # Arguments
+///
+/// * `path` — Entry path to inspect without following a symlink for the initial check.
+///
+/// # Returns
+///
+/// Returns Ok(true) for a managed regular file, or Ok(false) if the path is absent.
+///
+/// # Errors
+///
+/// Returns an error for an unrecognized file, symlink, other file type, or filesystem failure.
 fn check_managed(path: &Path) -> io::Result<bool> {
     let metadata = match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
@@ -142,10 +230,41 @@ fn check_managed(path: &Path) -> io::Result<bool> {
     )))
 }
 
+/// Builds the daemon autostart desktop entry.
+///
+/// # Arguments
+///
+/// * `executable` — Absolute UTF-8 path to an executable daemon file.
+///
+/// # Returns
+///
+/// Returns desktop-entry text invoking the daemon with --serve.
+///
+/// # Errors
+///
+/// Returns an error if target validation or metadata access fails.
 fn entry(executable: &Path) -> io::Result<String> {
     desktop_entry(executable, "Media Router", "--serve")
 }
 
+/// Validates an executable and builds its Cinnamon autostart entry.
+///
+/// Exec quoting follows desktop-entry rules and does not invoke a shell.
+///
+/// # Arguments
+///
+/// * `executable` — Absolute UTF-8 executable path, without control characters or '='.
+/// * `name` — Application display name.
+/// * `argument` — Trusted command argument appended after the quoted executable path.
+///
+/// # Returns
+///
+/// Returns serialized desktop-entry text marked as managed by Media Router.
+///
+/// # Errors
+///
+/// Returns an error if the path is invalid, metadata cannot be read, or the target is not an
+/// executable regular file.
 fn desktop_entry(executable: &Path, name: &str, argument: &str) -> io::Result<String> {
     let invalid = |message| io::Error::new(io::ErrorKind::InvalidInput, message);
     if !executable.is_absolute() {

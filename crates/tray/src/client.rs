@@ -8,12 +8,33 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use zbus::{Connection, Proxy};
 
+/// Resolves the daemon's current unique bus owner.
+///
+/// # Arguments
+///
+/// * `bus` — Proxy for the session bus name registry.
+///
+/// # Returns
+///
+/// Returns the unique owner of the daemon service name.
+///
+/// # Errors
+///
+/// Returns a D-Bus error if the daemon has no owner or the lookup fails.
 async fn owner(bus: &Proxy<'_>) -> zbus::Result<String> {
     bus.call("GetNameOwner", &(NAME,)).await
 }
 
-/// Runs until cancelled by the executable. A missing/restarted daemon is recoverable.
-/// Session-bus disconnection remains visible as an error; no mutation is replayed.
+/// Synchronizes the tray with the daemon across missing or replaced owners.
+///
+/// Runs until cancelled or the command channel closes. Session failures are exposed in the view and
+/// retried after a delay; stale actions are discarded and mutations are never replayed.
+///
+/// # Arguments
+///
+/// * `connection` — Session-bus connection used for owner-pinned API sessions.
+/// * `commands` — Receiver of user actions pinned to the owner visible when chosen.
+/// * `views` — Publisher for connected snapshots and disconnected diagnostics.
 pub async fn run(
     connection: Connection,
     mut commands: mpsc::Receiver<Command>,
@@ -40,6 +61,24 @@ pub async fn run(
         }
     }
 }
+/// Synchronizes snapshots and commands with one captured daemon owner.
+///
+/// Subscribes before reading snapshots. Mutations are attempted once, then snapshots are refreshed
+/// even after a request error.
+///
+/// # Arguments
+///
+/// * `connection` — Session-bus connection for API calls and signals.
+/// * `commands` — Receiver of owner-pinned commands.
+/// * `views` — Publisher for current snapshots, busy status, and request errors.
+///
+/// # Returns
+///
+/// Returns Ok(()) when ownership monitoring ends or changes, or commands close.
+///
+/// # Errors
+///
+/// Returns an error if bus setup, snapshot refresh, signal decoding, or monitoring fails.
 async fn session(
     connection: &Connection,
     commands: &mut mpsc::Receiver<Command>,
@@ -99,11 +138,45 @@ async fn session(
         views.send_replace(view.clone());
     }
 }
+/// Refreshes runtime and settings snapshots from the pinned daemon.
+///
+/// # Arguments
+///
+/// * `proxy` — API proxy addressed to one unique daemon owner.
+/// * `view` — View updated using revision-aware snapshot handling.
+///
+/// # Returns
+///
+/// Returns Ok(()) after both snapshots are read.
+///
+/// # Errors
+///
+/// Returns an API call or decoding error; runtime state may already be updated if settings
+/// retrieval fails.
 async fn refresh(proxy: &Proxy<'_>, view: &mut View) -> zbus::Result<()> {
     view.apply_state(proxy.call("GetState", &()).await?);
     view.apply_settings(proxy.call("GetSettings", &()).await?);
     Ok(())
 }
+/// Attempts one user-requested API mutation without retrying.
+///
+/// Exclusion changes read the latest full list immediately before replacing it to preserve other
+/// entries where possible.
+///
+/// # Arguments
+///
+/// * `proxy` — API proxy pinned to the command's daemon owner.
+/// * `action` — Selection, capture, reclaim, automatic-selection, or exclusion change.
+/// * `view` — View receiving the successful response snapshot.
+///
+/// # Returns
+///
+/// Returns Ok(()) after a successful response is applied.
+///
+/// # Errors
+///
+/// Returns an API call or decoding error; a failed or timed-out reply does not prove the mutation
+/// was unapplied.
 async fn mutate(proxy: &Proxy<'_>, action: Action, view: &mut View) -> zbus::Result<()> {
     match action {
         Action::Select(Some(id)) => {

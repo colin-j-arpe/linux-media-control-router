@@ -49,6 +49,17 @@ struct Inventory {
 }
 
 impl Inventory {
+    /// Reconciles one service with its current owner and starts validation as needed.
+    ///
+    /// Aborts validation for replaced owners and retains appearance provenance through retries.
+    ///
+    /// # Arguments
+    ///
+    /// * `connection` — Session-bus connection cloned for background validation.
+    /// * `service` — MPRIS service name to reconcile.
+    /// * `owner` — Current unique owner, or None when the service has disappeared.
+    /// * `emit` — Prompt callback receiving removals and their original provenance.
+    /// * `startup` — Whether a newly observed owner belongs to startup enumeration.
     fn reconcile(
         &mut self,
         connection: &Connection,
@@ -101,6 +112,14 @@ impl Inventory {
         }
     }
 
+    /// Admits or skips a completed validation for the current service generation.
+    ///
+    /// Ignores results for removed or replaced candidates.
+    ///
+    /// # Arguments
+    ///
+    /// * `result` — Completed probe result, including its service and generation.
+    /// * `emit` — Prompt callback receiving admission or rejection with appearance provenance.
     fn finish(
         &mut self,
         result: ProbeResult,
@@ -132,11 +151,23 @@ impl Inventory {
     }
 }
 
-/// Watch until the caller cancels this future, or the session bus fails.
+/// Watches validated MPRIS player arrivals and removals until cancelled.
 ///
-/// The callback should return promptly. Properties are discovery-time snapshots;
-/// live PropertiesChanged tracking and persistent selection are separate layers.
-/// Dropping this future aborts all outstanding validation tasks.
+/// Properties are discovery-time snapshots. Dropping the future aborts outstanding validation
+/// tasks; live property tracking and persistent selection are separate layers.
+///
+/// # Arguments
+///
+/// * `connection` — Session-bus connection to observe.
+/// * `emit` — Callback receiving discovery events; it should return promptly.
+///
+/// # Returns
+///
+/// Runs until cancelled or failed; normal operation does not return.
+///
+/// # Errors
+///
+/// Returns an error if bus observation or a validation task fails.
 pub async fn watch(
     connection: &Connection,
     mut emit: impl FnMut(DiscoveryEvent),
@@ -144,7 +175,23 @@ pub async fn watch(
     watch_with_origin(connection, |event, _| emit(event)).await
 }
 
-/// Like watch, with appearance provenance for automatic-selection policy.
+/// Watches MPRIS discovery events with their original appearance provenance.
+///
+/// Subscribes before startup enumeration and rejects stale owner results. Dropping the future
+/// aborts outstanding validation tasks.
+///
+/// # Arguments
+///
+/// * `connection` — Session-bus connection to observe.
+/// * `emit` — Prompt callback receiving each event and its startup flag and appearance time.
+///
+/// # Returns
+///
+/// Runs until cancelled or failed; normal operation does not return.
+///
+/// # Errors
+///
+/// Returns an error if bus observation or a validation task fails.
 pub async fn watch_with_origin(
     connection: &Connection,
     mut emit: impl FnMut(DiscoveryEvent, DiscoveryOrigin),
@@ -196,6 +243,20 @@ pub async fn watch_with_origin(
     }
 }
 
+/// Queries the current unique owner of a service.
+///
+/// # Arguments
+///
+/// * `bus` — Bus proxy used for name lookup.
+/// * `service` — Well-known service name to resolve.
+///
+/// # Returns
+///
+/// Returns the unique owner, or Ok(None) when the service has no owner.
+///
+/// # Errors
+///
+/// Returns an error for invalid names or other bus-query failures.
 async fn current_owner(bus: &DBusProxy<'_>, service: &str) -> zbus::Result<Option<String>> {
     match bus.get_name_owner(service.try_into()?).await {
         Ok(owner) => Ok(Some(owner.to_string())),
@@ -204,6 +265,21 @@ async fn current_owner(bus: &DBusProxy<'_>, service: &str) -> zbus::Result<Optio
     }
 }
 
+/// Retries bounded MPRIS validation for one captured owner.
+///
+/// # Arguments
+///
+/// * `connection` — Session-bus connection used for inspection.
+/// * `service` — MPRIS service name to retain.
+/// * `owner` — Unique owner to query on every attempt.
+///
+/// # Returns
+///
+/// Returns a validated player, or Ok(None) if CanControl is false.
+///
+/// # Errors
+///
+/// Returns the final validation diagnostic after all retries fail or time out.
 async fn probe(
     connection: &Connection,
     service: &str,

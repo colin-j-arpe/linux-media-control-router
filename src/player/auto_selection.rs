@@ -13,10 +13,23 @@ pub struct AutoSelection {
 }
 
 impl AutoSelection {
+    /// Enables or disables selection of newly appearing applications.
+    ///
+    /// Enabling an already enabled policy preserves its original activation time.
+    ///
+    /// # Arguments
+    ///
+    /// * `enabled` — Whether future eligible arrivals may trigger automatic selection.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.set_enabled_at(enabled, Instant::now());
     }
 
+    /// Updates the policy activation time for an enabled-state transition.
+    ///
+    /// # Arguments
+    ///
+    /// * `enabled` — Whether automatic selection should be active.
+    /// * `now` — Activation time to record only when transitioning from disabled to enabled.
     fn set_enabled_at(&mut self, enabled: bool, now: Instant) {
         match (self.enabled_since, enabled) {
             (None, true) => self.enabled_since = Some(now),
@@ -25,7 +38,21 @@ impl AutoSelection {
         }
     }
 
-    /// Evaluate before adding the player to Selection's registry.
+    /// Finds an eligible first arrival for automatic selection.
+    ///
+    /// Evaluate before adding the player to the selection registry.
+    ///
+    /// # Arguments
+    ///
+    /// * `selection` — Player registry before the event is applied.
+    /// * `preferences` — Saved exclusions used to filter arrivals.
+    /// * `event` — Discovery event to evaluate.
+    /// * `origin` — Original appearance time and startup provenance, retained through retries.
+    ///
+    /// # Returns
+    ///
+    /// Returns the logical identity of an eligible newly appearing application, or None if
+    /// disabled, excluded, already known, uncontrollable, or not a post-enable arrival.
     pub fn candidate(
         &self,
         selection: &Selection,

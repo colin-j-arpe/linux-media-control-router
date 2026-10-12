@@ -21,6 +21,12 @@ use media_router::player::{
     selection::{ApplicationId, Selection, SelectionState},
 };
 
+/// Runs the daemon command selected by process arguments.
+///
+/// # Returns
+///
+/// Returns success on completion, failure for an operation error, or exit code 2 for invalid
+/// arguments.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     match cli::parse(std::env::args_os().skip(1)) {
@@ -96,6 +102,25 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Runs discovery, routing, optional capture, and the optional session-bus API.
+///
+/// # Arguments
+///
+/// * `selected` — Explicit application selection, overriding saved selection when provided.
+/// * `interactive` — Whether to read terminal transport commands.
+/// * `capture_override` — Explicit capture preference, or None to use the serving preference or
+///   nonserving default.
+/// * `serve` — Whether to persist preferences and expose the D-Bus API.
+/// * `backend` — Input backend used when enabling capture.
+///
+/// # Returns
+///
+/// Returns Ok(()) after shutdown and capture cleanup.
+///
+/// # Errors
+///
+/// Returns an error for startup, discovery, publisher, command-task, or cleanup failures. Capture
+/// failures may be published as faults while serving.
 async fn watch(
     selected: Option<ApplicationId>,
     interactive: bool,
@@ -359,6 +384,22 @@ async fn watch(
     result
 }
 
+/// Saves preferences and publishes their visible values and persistence status.
+///
+/// # Arguments
+///
+/// * `store` — Locked preference store to update.
+/// * `server` — API server receiving the resulting settings snapshot.
+/// * `next` — Complete replacement preferences.
+///
+/// # Returns
+///
+/// Returns Ok(()) if the save is durable.
+///
+/// # Errors
+///
+/// Returns PersistenceFailed for a save failure; a visible but durability-uncertain replacement is
+/// still published.
 fn save_preferences(
     store: &mut Store,
     server: &Server,
@@ -374,6 +415,17 @@ fn save_preferences(
     result.map_err(|error| dbus_api::Error::PersistenceFailed(error.to_string()))
 }
 
+/// Builds a runtime snapshot and publishes it when serving.
+///
+/// # Arguments
+///
+/// * `server` — Optional API server managing snapshot revisions.
+/// * `selection` — Current application inventory and selection.
+/// * `capture` — Actual capture state and diagnostic.
+///
+/// # Returns
+///
+/// Returns the published snapshot, or a revision-zero snapshot when no server is present.
 fn publish(server: &Option<Server>, selection: &Selection, capture: &CaptureState) -> State {
     let snapshot = State::snapshot(selection, capture);
     match server {
@@ -382,6 +434,22 @@ fn publish(server: &Option<Server>, selection: &Selection, capture: &CaptureStat
     }
 }
 
+/// Enables or disables capture and records its actual outcome.
+///
+/// # Arguments
+///
+/// * `capture` — Current capture handle, replaced or cleared as needed.
+/// * `state` — Runtime capture status updated to enabled, disabled, or faulted.
+/// * `enabled` — Requested capture state.
+/// * `backend` — Backend used when starting a new capture session.
+///
+/// # Returns
+///
+/// Returns Ok(()) when the requested state is reached.
+///
+/// # Errors
+///
+/// Returns a diagnostic for startup, stop, or binding-recovery failure and records it in state.
 async fn change_capture(
     capture: &mut Option<Capture>,
     state: &mut CaptureState,
@@ -424,6 +492,20 @@ async fn change_capture(
     result
 }
 
+/// Refreshes listener priority for the active capture backend.
+///
+/// # Arguments
+///
+/// * `capture` — Active capture handle; cleared if reclaim fails.
+/// * `state` — Runtime capture status, marked faulted on reclaim failure.
+///
+/// # Returns
+///
+/// Returns Ok(()) after the backend reclaim succeeds.
+///
+/// # Errors
+///
+/// Returns CaptureFailed if capture is absent or reclaim fails; a failed reclaim triggers cleanup.
 async fn reclaim_capture(
     capture: &mut Option<Capture>,
     state: &mut CaptureState,
@@ -453,6 +535,13 @@ async fn reclaim_capture(
     }
 }
 
+/// Queues a transport action with its captured selection or reports why it was skipped.
+///
+/// # Arguments
+///
+/// * `action` — Transport command received from input.
+/// * `target` — Selection snapshot to retain for eventual dispatch.
+/// * `pending` — Command queue, limited to 32 pending actions.
 fn enqueue(
     action: TransportAction,
     target: SelectionState,
@@ -470,6 +559,17 @@ fn enqueue(
     }
 }
 
+/// Starts optional line-oriented terminal input on a detached thread.
+///
+/// The detached reader does not delay process shutdown while standard input is idle.
+///
+/// # Arguments
+///
+/// * `enabled` — Whether to read standard input.
+///
+/// # Returns
+///
+/// Returns a bounded receiver of lines or read errors; when disabled, the channel is closed.
 fn terminal_input(enabled: bool) -> mpsc::Receiver<std::io::Result<String>> {
     let (sender, receiver) = mpsc::channel(32);
     if enabled {
@@ -487,6 +587,12 @@ fn terminal_input(enabled: bool) -> mpsc::Receiver<std::io::Result<String>> {
     receiver
 }
 
+/// Prints the result of a transport dispatch.
+///
+/// # Arguments
+///
+/// * `action` — Command whose result should be reported.
+/// * `outcome` — Acknowledgement, skip reason, or failure to display.
 fn print_outcome(action: TransportAction, outcome: RouteOutcome) {
     match outcome {
         RouteOutcome::Acknowledged => println!("COMMAND ACKNOWLEDGED: {action}"),
@@ -499,6 +605,11 @@ fn print_outcome(action: TransportAction, outcome: RouteOutcome) {
     }
 }
 
+/// Prints a player discovery event and its relevant details.
+///
+/// # Arguments
+///
+/// * `event` — Addition, removal, or skipped admission to report.
 fn print_event(event: &DiscoveryEvent) {
     match event {
         DiscoveryEvent::Added(player) => {
@@ -527,6 +638,11 @@ fn print_event(event: &DiscoveryEvent) {
     }
 }
 
+/// Prints a player's logical identity and running-instance identifiers.
+///
+/// # Arguments
+///
+/// * `player` — Validated player to describe.
 fn print_instance(player: &Player) {
     println!("  application: {}", ApplicationId::from(player));
     if player.desktop_entry.is_none() {
@@ -536,6 +652,11 @@ fn print_instance(player: &Player) {
     println!("  owner: {}", player.owner);
 }
 
+/// Prints the retained selection and current availability.
+///
+/// # Arguments
+///
+/// * `state` — Selection snapshot to report.
 fn print_selection(state: SelectionState) {
     match state {
         SelectionState::Unselected => println!("SELECTION NONE"),

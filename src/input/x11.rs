@@ -17,6 +17,11 @@ use x11rb::{
 
 struct Descriptor(RawFd);
 impl AsRawFd for Descriptor {
+    /// Exposes the borrowed X11 connection descriptor for readiness monitoring.
+    ///
+    /// # Returns
+    ///
+    /// Returns the descriptor without transferring ownership.
     fn as_raw_fd(&self) -> RawFd {
         self.0
     }
@@ -31,6 +36,16 @@ pub(crate) struct Keyboard {
     pressed: HashSet<u8>,
 }
 impl Keyboard {
+    /// Connects to X11 and prepares transport-key event monitoring.
+    ///
+    /// # Returns
+    ///
+    /// Returns a keyboard connection with its validated key map and readiness registration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for connection failure, missing XKB or detectable repeat support, invalid
+    /// mapping, or readiness setup.
     pub fn connect() -> Result<Self> {
         let (connection, _) = x11rb::connect(None)?;
         if !connection.xkb_use_extension(1, 0)?.reply()?.supported {
@@ -73,6 +88,16 @@ impl Keyboard {
             pressed: HashSet::new(),
         })
     }
+    /// Grabs transport keys across screens and supported lock-modifier combinations.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) after all grabs are accepted and flushed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an X11 error; a rejected grab reply triggers an attempt to release the configured
+    /// grabs.
     pub fn grab(&self) -> Result<()> {
         for screen in &self.connection.setup().roots {
             for &code in self.keys.keys() {
@@ -98,6 +123,15 @@ impl Keyboard {
         self.connection.flush()?;
         Ok(())
     }
+    /// Releases the configured transport-key grabs across all screens.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) after the ungrab requests are checked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an X11 ungrab request fails.
     fn ungrab(&self) -> Result<()> {
         for screen in &self.connection.setup().roots {
             for &code in self.keys.keys() {
@@ -110,6 +144,15 @@ impl Keyboard {
         }
         Ok(())
     }
+    /// Verifies that transport keys and lock modifiers still match the startup map.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) when the mapping is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if mapping queries fail or relevant mappings changed.
     fn check_mapping(&self) -> Result<()> {
         let (keys, modifiers) = key_map(&self.connection)?;
         if keys != self.keys || modifiers != self.modifiers {
@@ -117,6 +160,18 @@ impl Keyboard {
         }
         Ok(())
     }
+    /// Waits for a physical transport-key press without replaying key repeats.
+    ///
+    /// Ignores synthetic key events and unsupported modifier combinations.
+    ///
+    /// # Returns
+    ///
+    /// Returns the next supported hardware transport action.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for X11 events, connection or readiness failures, or changed keyboard
+    /// mapping.
     pub async fn next(&mut self) -> Result<TransportAction> {
         loop {
             if let Some(event) = self.connection.poll_for_event()? {
@@ -151,6 +206,20 @@ impl Keyboard {
     }
 }
 type KeyMap = (BTreeMap<u8, TransportAction>, Vec<u16>);
+/// Builds transport-key and lock-modifier mappings from the X server.
+///
+/// # Arguments
+///
+/// * `connection` — X11 connection used to query keyboard and modifier maps.
+///
+/// # Returns
+///
+/// Returns transport keycodes and all supported combinations of lock modifiers.
+///
+/// # Errors
+///
+/// Returns an error for query failure, empty mappings, absent transport keys, or modifier slots
+/// mixing lock keys with shortcut modifiers.
 fn key_map(connection: &RustConnection) -> Result<KeyMap> {
     let setup = connection.setup();
     let mapping = connection
@@ -196,6 +265,15 @@ fn key_map(connection: &RustConnection) -> Result<KeyMap> {
     Ok((keys, modifiers))
 }
 
+/// Maps a standard hardware keysym to a supported transport action.
+///
+/// # Arguments
+///
+/// * `symbol` — Base-level X11 keysym to normalize.
+///
+/// # Returns
+///
+/// Returns the action, or None for volume, mute, and other unsupported symbols.
 fn action(symbol: u32) -> Option<TransportAction> {
     match symbol {
         0x1008ff14 | 0x1008ff31 => Some(TransportAction::PlayPause),

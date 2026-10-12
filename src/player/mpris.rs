@@ -9,7 +9,21 @@ const ROOT: &str = "org.mpris.MediaPlayer2";
 const PLAYER: &str = "org.mpris.MediaPlayer2.Player";
 type Properties = HashMap<String, OwnedValue>;
 
-/// Query the unique owner, so a name changing hands cannot mix two players' data.
+/// Reads and validates one MPRIS instance through its unique owner.
+///
+/// # Arguments
+///
+/// * `connection` — Session-bus connection used for property queries.
+/// * `service` — Well-known MPRIS service name recorded in the player.
+/// * `owner` — Unique owner queried to avoid mixing data across service replacements.
+///
+/// # Returns
+///
+/// Returns a validated player, or Ok(None) when CanControl is false.
+///
+/// # Errors
+///
+/// Returns a diagnostic for D-Bus failures or missing, mistyped, or invalid required properties.
 pub(crate) async fn inspect(
     connection: &Connection,
     service: &str,
@@ -37,6 +51,22 @@ pub(crate) async fn inspect(
     parse(service, owner, &root, &properties).map(Some)
 }
 
+/// Builds a validated player from MPRIS property snapshots.
+///
+/// # Arguments
+///
+/// * `service` — Well-known MPRIS service name to retain.
+/// * `owner` — Unique bus owner to retain.
+/// * `root` — MediaPlayer2 interface properties containing application metadata.
+/// * `properties` — Player interface properties containing status and capabilities.
+///
+/// # Returns
+///
+/// Returns the validated player; a missing or empty DesktopEntry remains absent.
+///
+/// # Errors
+///
+/// Returns a diagnostic for missing, mistyped, or invalid properties.
 fn parse(
     service: &str,
     owner: &str,
@@ -74,6 +104,20 @@ fn parse(
     })
 }
 
+/// Reads a required string from a property snapshot.
+///
+/// # Arguments
+///
+/// * `properties` — Property map to inspect.
+/// * `name` — Required property name.
+///
+/// # Returns
+///
+/// Returns the string borrowed from the map.
+///
+/// # Errors
+///
+/// Returns a diagnostic if the property is absent or not a string.
 fn string<'a>(properties: &'a Properties, name: &str) -> Result<&'a str, String> {
     properties
         .get(name)
@@ -82,6 +126,20 @@ fn string<'a>(properties: &'a Properties, name: &str) -> Result<&'a str, String>
         .map_err(|_| format!("{name} must be a string"))
 }
 
+/// Reads a required Boolean from a property snapshot.
+///
+/// # Arguments
+///
+/// * `properties` — Property map to inspect.
+/// * `name` — Required property name.
+///
+/// # Returns
+///
+/// Returns the property value.
+///
+/// # Errors
+///
+/// Returns a diagnostic if the property is absent or not a Boolean.
 fn boolean(properties: &Properties, name: &str) -> Result<bool, String> {
     properties
         .get(name)

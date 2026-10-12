@@ -25,6 +25,11 @@ pub struct Preferences {
 }
 
 impl Default for Preferences {
+    /// Creates version-one preferences with all optional behavior disabled.
+    ///
+    /// # Returns
+    ///
+    /// Returns preferences with no selection or exclusions and capture and automatic selection off.
     fn default() -> Self {
         Self {
             version: 1,
@@ -37,6 +42,15 @@ impl Default for Preferences {
 }
 
 impl Preferences {
+    /// Checks the supported configuration version and logical identities.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) when preferences are supported.
+    ///
+    /// # Errors
+    ///
+    /// Returns InvalidData for an unsupported version or an empty desktop-entry identity.
     fn validate(&self) -> io::Result<()> {
         if self.version != 1 {
             return Err(io::Error::new(
@@ -56,7 +70,15 @@ impl Preferences {
     }
 }
 
-/// Resolve XDG configuration without creating files or touching desktop settings.
+/// Resolves the application configuration directory without creating files.
+///
+/// # Returns
+///
+/// Returns media-router under an absolute XDG_CONFIG_HOME, or under HOME/.config as a fallback.
+///
+/// # Errors
+///
+/// Returns NotFound if neither environment variable supplies an absolute base path.
 pub fn directory() -> io::Result<PathBuf> {
     configuration_directory(
         env::var_os("XDG_CONFIG_HOME").as_deref().map(Path::new),
@@ -64,6 +86,20 @@ pub fn directory() -> io::Result<PathBuf> {
     )
 }
 
+/// Resolves a configuration directory from candidate XDG and home paths.
+///
+/// # Arguments
+///
+/// * `xdg` — Optional XDG_CONFIG_HOME path; relative paths are ignored.
+/// * `home` — Optional absolute home directory used when xdg is unavailable or relative.
+///
+/// # Returns
+///
+/// Returns the application directory beneath the chosen configuration base.
+///
+/// # Errors
+///
+/// Returns NotFound if neither candidate supplies an absolute base path.
 fn configuration_directory(xdg: Option<&Path>, home: Option<&Path>) -> io::Result<PathBuf> {
     // XDG paths must be absolute; ignore empty or relative environment values.
     let base = match xdg.filter(|path| path.is_absolute()) {
@@ -90,6 +126,19 @@ pub enum SaveError {
 }
 
 impl fmt::Display for SaveError {
+    /// Formats the save failure with its replacement or durability context.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` — Formatter receiving the diagnostic.
+    ///
+    /// # Returns
+    ///
+    /// Returns the formatting result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the formatter cannot accept the output.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotSaved(error) => write!(f, "configuration was not saved: {error}"),
@@ -102,6 +151,11 @@ impl fmt::Display for SaveError {
 }
 
 impl std::error::Error for SaveError {
+    /// Exposes the underlying filesystem or serialization I/O error.
+    ///
+    /// # Returns
+    ///
+    /// Returns Some(error) for either save-failure variant.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(match self {
             Self::NotSaved(error) | Self::DurabilityUncertain(error) => error,
@@ -118,6 +172,21 @@ pub struct Store {
 }
 
 impl Store {
+    /// Opens validated preferences and holds their single-writer lock.
+    ///
+    /// # Arguments
+    ///
+    /// * `directory` — Configuration directory to create privately if missing.
+    ///
+    /// # Returns
+    ///
+    /// Returns a store holding the lock until dropped; a missing config.json supplies defaults
+    /// without writing that file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for lock contention, filesystem failure, malformed JSON, or unsupported
+    /// preferences.
     pub fn open(directory: PathBuf) -> io::Result<Self> {
         create_private_directory(&directory)?;
         let lock = OpenOptions::new()
@@ -151,16 +220,52 @@ impl Store {
         })
     }
 
+    /// Borrows the latest preferences visible to this store.
+    ///
+    /// # Returns
+    ///
+    /// Returns the current preferences, including a replacement whose final directory sync failed.
     pub fn preferences(&self) -> &Preferences {
         &self.preferences
     }
 
-    /// Save before acknowledging a preference change. On DurabilityUncertain,
-    /// preferences() reflects the replacement, and callers must report the error.
+    /// Replaces preferences on disk before acknowledging a change.
+    ///
+    /// Callers must save user intent before applying it to runtime state and must report durability
+    /// errors.
+    ///
+    /// # Arguments
+    ///
+    /// * `preferences` — Complete replacement preferences to validate and persist.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) after the replacement and directory sync succeed.
+    ///
+    /// # Errors
+    ///
+    /// Returns NotSaved if replacement fails, or DurabilityUncertain if the final directory sync
+    /// fails. In the latter case, preferences() reflects the visible replacement.
     pub fn save(&mut self, preferences: Preferences) -> Result<(), SaveError> {
         self.save_with_directory_sync(preferences, |path| File::open(path)?.sync_all())
     }
 
+    /// Persists preferences using a supplied final directory synchronization step.
+    ///
+    /// # Arguments
+    ///
+    /// * `preferences` — Complete replacement preferences to validate and persist.
+    /// * `sync_directory` — Callback invoked on the configuration directory after rename and the
+    ///   in-memory update.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) when replacement and the synchronization callback succeed.
+    ///
+    /// # Errors
+    ///
+    /// Returns NotSaved before a successful rename, or DurabilityUncertain if the callback fails
+    /// afterward.
     fn save_with_directory_sync(
         &mut self,
         preferences: Preferences,

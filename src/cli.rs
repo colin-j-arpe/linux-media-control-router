@@ -54,6 +54,22 @@ pub enum Command {
     RemoveAutostart,
 }
 
+/// Parses daemon command-line options while preserving exact selection values.
+///
+/// Executable-path validation for autostart installation is performed by the installer.
+///
+/// # Arguments
+///
+/// * `arguments` — Arguments after the executable name, including any grouped short options.
+///
+/// # Returns
+///
+/// Returns the requested standalone command or watch configuration; absent capture flags remain
+/// None.
+///
+/// # Errors
+///
+/// Returns a diagnostic for non-UTF-8, unknown, duplicate, conflicting, or incomplete arguments.
 pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
     let arguments = arguments
         .into_iter()
@@ -134,6 +150,21 @@ struct Options {
     backend: Option<Backend>,
 }
 impl Options {
+    /// Applies one normalized option to the accumulating watch configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `option` — Long option name, including names expanded from short flags.
+    /// * `attached` — Optional selection value attached to a short flag.
+    /// * `arguments` — Remaining argument iterator, advanced when the option consumes a value.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) after applying the option.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic for unknown, standalone, duplicate, conflicting, or invalid options.
     fn apply(
         &mut self,
         option: &str,
@@ -191,6 +222,20 @@ impl Options {
         }
     }
 }
+/// Sets a Boolean option once and rejects duplicate occurrences.
+///
+/// # Arguments
+///
+/// * `flag` — Accumulated option value to set to true.
+/// * `option` — Option name used in duplicate diagnostics.
+///
+/// # Returns
+///
+/// Returns Ok(()) after setting the flag.
+///
+/// # Errors
+///
+/// Returns a diagnostic if the flag was already true.
 fn set_flag(flag: &mut bool, option: &str) -> Result<(), String> {
     if *flag {
         return Err(format!("duplicate option {option}"));
