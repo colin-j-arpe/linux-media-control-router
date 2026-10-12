@@ -6,7 +6,8 @@ The initial target is Linux Mint Cinnamon on X11.
 
 ## Installing a release archive
 
-The initial release is `0.1.0`. See [release notes](CHANGELOG.md) for features
+Release `0.2.1` includes paired daemon/tray autostart. See
+[release notes](CHANGELOG.md) for features
 and limitations. Binary archives are built on Linux Mint 22.3 for x86-64;
 other distributions and Wayland have not been verified. The daemon requires
 GLib/GIO runtime libraries, Cinnamon's media-key settings schema, and an X11
@@ -17,8 +18,8 @@ and extract them:
 
 ```sh
 sha256sum -c SHA256SUMS
-tar -xzf media-router-0.1.0-linuxmint22.3-x86_64.tar.gz
-cd media-router-0.1.0-linuxmint22.3-x86_64
+tar -xzf media-router-0.2.1-linuxmint22.3-x86_64.tar.gz
+cd media-router-0.2.1-linuxmint22.3-x86_64
 install -Dm755 bin/media-router "$HOME/.local/bin/media-router"
 install -Dm755 bin/media-router-tray "$HOME/.local/bin/media-router-tray"
 ```
@@ -28,9 +29,9 @@ before replacing either executable. Saved preferences are retained. Run
 `$HOME/.local/bin/media-router --serve` and, in a separate terminal,
 `$HOME/.local/bin/media-router-tray`. Enable **Capture media keys** in the tray;
 capture is opt-in. Login startup is also opt-in; see [Starting at login](#starting-at-login).
-The published `0.1.0` autostart command starts only the daemon. Paired daemon/tray
-autostart described below is an unreleased change; build the updated source
-to use it.
+When upgrading from `0.1.0`, rerun `--install-autostart` with the installed
+daemon path to register both the daemon and tray for login. The tray executable
+must be beside the daemon; see [Starting at login](#starting-at-login).
 
 ## Building from source
 
@@ -74,8 +75,8 @@ Right-click the blue play icon on Cinnamon. Other hosts may also support
 left-click; menu opening and dismissal follow the desktop's conventions.
 The tray does not start the daemon or install login entries. The
 `--install-autostart` command registers both the daemon and its sibling tray
-executable for login startup (an unreleased change after `0.1.0`). To install
-the tray executable separately, use `cargo install --locked --path crates/tray`.
+executable for login startup. To install the tray executable separately, use
+`cargo install --locked --path crates/tray`.
 
 The menu provides:
 

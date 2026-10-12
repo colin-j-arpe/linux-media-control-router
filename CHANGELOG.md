@@ -2,12 +2,34 @@
 
 ## Unreleased
 
+## 0.2.1
+
 - Autostart registration now installs both daemon and tray login entries using
   executables from the same directory. Removing autostart removes both entries;
   existing daemon-only entries can be upgraded by rerunning installation.
 - The tray's new `--wait-for-host` mode tolerates a desktop tray host that starts
   late or restarts. Autostart uses this mode so neither program needs a terminal
   after login. Manual launches retain their existing missing-host behavior.
+- Added structured documentation comments throughout the daemon, tray client,
+  and runnable compatibility probes, including argument, return-value, error,
+  and relevant panic descriptions.
+
+### Upgrading from 0.1.0
+
+Stop the daemon and quit the tray before replacing both executables. Saved
+preferences are retained. If login startup was previously enabled, rerun
+`--install-autostart` with the absolute installed daemon path to upgrade the
+daemon-only entry and add the tray entry. The tray executable must be beside
+the daemon. Capture and login startup remain opt-in.
+
+### Supported environment and limitations
+
+The binary archive targets Linux Mint 22.3 x86-64 and is dynamically linked.
+Capture support remains limited to Cinnamon/X11; other desktops, distributions,
+and Wayland have not been verified. A StatusNotifier-compatible tray host is
+required. Listener priority remains best effort, and some GTK tray menus can
+suppress media-key notifications while open. MRP and individual browser-tab
+selection remain deferred.
 
 ## 0.1.0 — initial release
 
