@@ -16,6 +16,15 @@ pub enum ApplicationId {
 }
 
 impl From<&Player> for ApplicationId {
+    /// Derives a logical application identity from a validated player.
+    ///
+    /// # Arguments
+    ///
+    /// * `player` — Player whose application metadata should be used.
+    ///
+    /// # Returns
+    ///
+    /// Returns a nonempty DesktopEntry identity when present, otherwise the exact Identity string.
     fn from(player: &Player) -> Self {
         match player
             .desktop_entry
@@ -29,6 +38,19 @@ impl From<&Player> for ApplicationId {
 }
 
 impl fmt::Display for ApplicationId {
+    /// Formats an application identity with its namespace and quoted value.
+    ///
+    /// # Arguments
+    ///
+    /// * `formatter` — Formatter receiving the display text.
+    ///
+    /// # Returns
+    ///
+    /// Returns the formatting result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the formatter cannot accept the output.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DesktopEntry(value) => write!(formatter, "desktop-entry {value:?}"),
@@ -45,6 +67,15 @@ pub struct InstanceId {
 }
 
 impl From<&Player> for InstanceId {
+    /// Captures the service and unique owner identifying one running instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `player` — Player whose running-instance identifiers should be copied.
+    ///
+    /// # Returns
+    ///
+    /// Returns an instance identity containing both service and owner.
     fn from(player: &Player) -> Self {
         Self {
             service: player.service.clone(),
@@ -82,7 +113,15 @@ pub struct Selection {
 }
 
 impl Selection {
-    /// Apply a validated discovery event and report only selection-state changes.
+    /// Updates the registry from a validated discovery event.
+    ///
+    /// # Arguments
+    ///
+    /// * `event` — Player addition, removal, or skipped admission to apply.
+    ///
+    /// # Returns
+    ///
+    /// Returns the new selection state only when it changes; skipped events return None.
     pub fn apply_event(&mut self, event: &DiscoveryEvent) -> Option<SelectionState> {
         let before = self.state();
         match event {
@@ -94,7 +133,11 @@ impl Selection {
         (before != after).then_some(after)
     }
 
-    /// Validated controllable instances, ordered by service name.
+    /// Iterates over validated controllable player instances.
+    ///
+    /// # Returns
+    ///
+    /// Returns application and player references ordered by service name.
     pub fn players(&self) -> impl Iterator<Item = (&ApplicationId, &Player)> {
         self.players
             .values()
@@ -102,10 +145,20 @@ impl Selection {
             .map(|entry| (&entry.application, &entry.player))
     }
 
+    /// Borrows the retained logical application selection.
+    ///
+    /// # Returns
+    ///
+    /// Returns the selected identity even while unavailable, or None when unselected.
     pub fn selected_application(&self) -> Option<&ApplicationId> {
         self.selected.as_ref()
     }
 
+    /// Borrows the currently resolved player instance.
+    ///
+    /// # Returns
+    ///
+    /// Returns the player matching the active service and owner, or None if no instance is active.
     pub fn active_player(&self) -> Option<&Player> {
         let active = self.active.as_ref()?;
         self.players
@@ -114,6 +167,11 @@ impl Selection {
             .map(|registered| &registered.player)
     }
 
+    /// Snapshots the retained selection and its current availability.
+    ///
+    /// # Returns
+    ///
+    /// Returns an unselected, unavailable, or available state with owned identifiers.
     pub fn state(&self) -> SelectionState {
         match (&self.selected, &self.active) {
             (Some(application), Some(instance)) => SelectionState::Available {
@@ -127,8 +185,14 @@ impl Selection {
         }
     }
 
-    /// Select an application even when it is absent, or pass None to clear it.
-    /// Selecting the same application again preserves its current instance.
+    /// Sets or clears the retained logical application selection.
+    ///
+    /// Selecting the same application again preserves its eligible active instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `application` — Application identity to retain even while absent, or None to clear
+    ///   selection.
     pub fn select(&mut self, application: Option<ApplicationId>) {
         if self.selected != application {
             self.selected = application;
@@ -137,6 +201,12 @@ impl Selection {
         self.resolve();
     }
 
+    /// Registers or replaces a player and resolves the active selection.
+    ///
+    /// # Arguments
+    ///
+    /// * `application` — Logical identity associated with the validated player.
+    /// * `player` — Player instance to register under its service name.
     pub fn add(&mut self, application: ApplicationId, player: Player) {
         self.players.insert(
             player.service.clone(),
@@ -148,7 +218,14 @@ impl Selection {
         self.resolve();
     }
 
-    /// Ignore a delayed removal belonging to an older owner of the same name.
+    /// Removes a player only if its service still belongs to the specified owner.
+    ///
+    /// Delayed removal events for an older owner leave a replacement instance intact.
+    ///
+    /// # Arguments
+    ///
+    /// * `service` — Well-known MPRIS service name to remove.
+    /// * `owner` — Unique owner expected for that service.
     pub fn remove(&mut self, service: &str, owner: &str) {
         if self
             .players
@@ -160,6 +237,10 @@ impl Selection {
         }
     }
 
+    /// Resolves the retained application to an eligible running instance.
+    ///
+    /// Keeps the current eligible instance; otherwise chooses the first match in service-name
+    /// order.
     fn resolve(&mut self) {
         let Some(selected) = &self.selected else {
             self.active = None;

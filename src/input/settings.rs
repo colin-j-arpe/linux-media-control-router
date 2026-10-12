@@ -26,12 +26,48 @@ pub(crate) struct Value {
 }
 
 pub(crate) trait Settings {
+    /// Reads effective shortcut values and their explicit user override.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` — Supported shortcut setting name.
+    ///
+    /// # Returns
+    ///
+    /// Returns both the effective array and the optional explicit user value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the setting cannot be read or decoded.
     fn read(&self, key: &str) -> Result<Value>;
+    /// Writes or resets a shortcut setting.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` — Supported shortcut setting name.
+    /// * `value` — Explicit replacement array, or None to restore the inherited default.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) when the write succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the setting cannot be changed or verified.
     fn write(&self, key: &str, value: Option<&[String]>) -> Result<()>;
 }
 
 pub(crate) struct Cinnamon(gio::Settings);
 impl Cinnamon {
+    /// Opens the Cinnamon media-key schema and validates required shortcut keys.
+    ///
+    /// # Returns
+    ///
+    /// Returns a settings adapter for the installed schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the schema is missing or a required key is absent or not a string array.
     pub fn new() -> Result<Self> {
         let schema = gio::SettingsSchemaSource::default()
             .and_then(|source| source.lookup(SCHEMA, true))
@@ -48,6 +84,7 @@ impl Cinnamon {
         )))
     }
 }
+/// Dispatches pending notifications on the default GLib main context.
 fn pump() {
     let context = gio::glib::MainContext::default();
     while context.pending() {
@@ -55,6 +92,23 @@ fn pump() {
     }
 }
 impl Settings for Cinnamon {
+    /// Reads a Cinnamon shortcut after dispatching pending settings notifications.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` — Validated string-array key from the Cinnamon media-key schema.
+    ///
+    /// # Returns
+    ///
+    /// Returns the effective shortcut array and its optional user override.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the user value is not a string array.
+    ///
+    /// # Panics
+    ///
+    /// GSettings may panic if key is absent from the schema or has an incompatible type.
     fn read(&self, key: &str) -> Result<Value> {
         pump();
         Ok(Value {
@@ -66,6 +120,25 @@ impl Settings for Cinnamon {
                 .transpose()?,
         })
     }
+    /// Writes or resets a Cinnamon shortcut and verifies its user value.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` — Validated string-array key from the Cinnamon media-key schema.
+    /// * `value` — Explicit replacement array, or None to reset the user override.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) after synchronization and verification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the setting is unwritable, writing fails, or the user value does not
+    /// match.
+    ///
+    /// # Panics
+    ///
+    /// GSettings may panic if key is absent from the schema or has an incompatible type.
     fn write(&self, key: &str, value: Option<&[String]>) -> Result<()> {
         if !self.0.is_writable(key) {
             return Err(format!("Cinnamon setting is not writable: {key}").into());
@@ -105,6 +178,21 @@ pub(crate) struct Lease<S: Settings> {
     _lock: File,
 }
 impl<S: Settings> Lease<S> {
+    /// Creates a private recovery directory and acquires its transaction lock.
+    ///
+    /// # Arguments
+    ///
+    /// * `settings` — Settings adapter owned by the lease for capture and recovery.
+    /// * `directory` — Directory holding the binding journal and shared lock.
+    ///
+    /// # Returns
+    ///
+    /// Returns a lease holding the lock until dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if directory creation, lock-file access, or nonblocking lock acquisition
+    /// fails.
     pub fn open(settings: S, directory: PathBuf) -> Result<Self> {
         fs::DirBuilder::new()
             .recursive(true)
@@ -126,9 +214,24 @@ impl<S: Settings> Lease<S> {
             _lock: lock,
         })
     }
+    /// Resolves the binding recovery journal path.
+    ///
+    /// # Returns
+    ///
+    /// Returns bindings.json within the lease directory.
     fn path(&self) -> PathBuf {
         self.directory.join("bindings.json")
     }
+    /// Loads and validates the binding recovery journal before any settings writes.
+    ///
+    /// # Returns
+    ///
+    /// Returns the validated journal, or Ok(None) when it is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for read or JSON failures, unsupported versions, or inconsistent or
+    /// unrecognized entries.
     fn load(&self) -> Result<Option<Journal>> {
         let bytes = match fs::read(self.path()) {
             Ok(bytes) => bytes,
@@ -156,6 +259,19 @@ impl<S: Settings> Lease<S> {
         }
         Ok(Some(journal))
     }
+    /// Journals original shortcuts before temporarily removing hardware transport bindings.
+    ///
+    /// Custom shortcuts are retained. The recovery journal is durable before the first
+    /// desktop-settings write.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) after all affected shortcuts are changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for recovery, journal, settings, or concurrent-edit failures. Partial
+    /// changes retain the journal for restoration.
     pub fn acquire(&self) -> Result<()> {
         self.restore()?;
         let mut entries = Vec::new();
@@ -186,6 +302,20 @@ impl<S: Settings> Lease<S> {
         }
         Ok(())
     }
+    /// Durably replaces the recovery journal through a temporary file.
+    ///
+    /// # Arguments
+    ///
+    /// * `journal` — Validated transaction snapshot to serialize.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) after file and directory synchronization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or a filesystem operation fails; a final sync failure may
+    /// follow a visible replacement.
     fn save(&self, journal: &Journal) -> Result<()> {
         let temporary = self.directory.join("bindings.tmp");
         // Only a stale, incomplete temporary file may exist while this lock is held.
@@ -201,6 +331,16 @@ impl<S: Settings> Lease<S> {
         File::open(&self.directory)?.sync_all()?;
         Ok(())
     }
+    /// Checks that all journaled shortcuts still match their temporary capture values.
+    ///
+    /// # Returns
+    ///
+    /// Returns true when both effective values and user overrides match, or false after an external
+    /// edit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the journal is absent, invalid, unreadable, or a setting cannot be read.
     pub fn unchanged(&self) -> Result<bool> {
         let journal = self.load()?.ok_or("capture recovery journal disappeared")?;
         for entry in journal.entries {
@@ -213,6 +353,19 @@ impl<S: Settings> Lease<S> {
         }
         Ok(true)
     }
+    /// Restores journaled shortcut overrides while preserving external edits.
+    ///
+    /// Already restored entries are skipped. Conflicts preserve the user value and archive the
+    /// original journal; otherwise the completed journal is removed.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) when restoration finishes, including when there is no journal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for journal, settings, clock, or filesystem failures. Settings failures
+    /// leave the journal for a later retry.
     pub fn restore(&self) -> Result<()> {
         let Some(journal) = self.load()? else {
             return Ok(());
@@ -264,12 +417,25 @@ impl<S: Settings> Lease<S> {
     }
 }
 impl<S: Settings> Drop for Lease<S> {
+    /// Attempts binding restoration as a fallback when the lease is dropped.
+    ///
+    /// Reports restoration failures to standard error so pending recovery remains visible.
     fn drop(&mut self) {
         if let Err(e) = self.restore() {
             eprintln!("BINDING RECOVERY REQUIRED: {e}; run media-router --restore-bindings");
         }
     }
 }
+/// Copies shortcut values while removing one exact accelerator.
+///
+/// # Arguments
+///
+/// * `values` — Original shortcut array.
+/// * `accelerator` — Exact hardware accelerator to exclude.
+///
+/// # Returns
+///
+/// Returns the remaining values in their original order.
 fn without(values: &[String], accelerator: &str) -> Vec<String> {
     values
         .iter()
@@ -277,6 +443,15 @@ fn without(values: &[String], accelerator: &str) -> Vec<String> {
         .cloned()
         .collect()
 }
+/// Resolves the per-user capture recovery directory without creating it.
+///
+/// # Returns
+///
+/// Returns media-router beneath absolute XDG_STATE_HOME, or HOME/.local/state as a fallback.
+///
+/// # Errors
+///
+/// Returns an error if neither environment variable supplies an absolute base path.
 pub(crate) fn state_directory() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("XDG_STATE_HOME").filter(|p| Path::new(p).is_absolute()) {
         return Ok(PathBuf::from(path).join("media-router"));

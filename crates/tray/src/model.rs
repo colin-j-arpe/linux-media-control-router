@@ -10,9 +10,21 @@ pub struct View {
     pub busy: bool,
 }
 impl View {
+    /// Checks whether this view has an owner and both daemon snapshots.
+    ///
+    /// # Returns
+    ///
+    /// Returns true only when owner, state, and settings are present.
     pub fn connected(&self) -> bool {
         self.owner.is_some() && self.state.is_some() && self.settings.is_some()
     }
+    /// Accepts an initial or strictly newer runtime snapshot for the current owner.
+    ///
+    /// Ignores equal or older revisions. A new owner must start with a fresh view.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` — Incoming runtime snapshot and revision.
     pub fn apply_state(&mut self, state: State) {
         if self
             .state
@@ -22,6 +34,13 @@ impl View {
             self.state = Some(state);
         }
     }
+    /// Accepts an initial or strictly newer settings snapshot for the current owner.
+    ///
+    /// Ignores equal or older revisions. A new owner must start with a fresh view.
+    ///
+    /// # Arguments
+    ///
+    /// * `settings` — Incoming settings snapshot and revision.
     pub fn apply_settings(&mut self, settings: Settings) {
         if self
             .settings
@@ -31,6 +50,12 @@ impl View {
             self.settings = Some(settings);
         }
     }
+    /// Checks whether the tray should display its warning badge.
+    ///
+    /// # Returns
+    ///
+    /// Returns true for disconnection, request or persistence errors, an unavailable selection, or
+    /// an unrecognized or faulted capture status.
     pub fn warning(&self) -> bool {
         !self.connected()
             || !self.error.is_empty()
@@ -63,7 +88,18 @@ pub struct Command {
     pub action: Action,
 }
 
-/// Escape menu mnemonics and control characters without changing wire identities.
+/// Escapes menu mnemonics and control characters for display.
+///
+/// Only display text changes; wire identities remain exact.
+///
+/// # Arguments
+///
+/// * `text` — Unmodified source label or identity value.
+///
+/// # Returns
+///
+/// Returns a label with doubled underscores and spaces replacing control characters, or (empty
+/// identity) for empty input.
 pub fn label(text: &str) -> String {
     if text.is_empty() {
         return "(empty identity)".into();
@@ -80,6 +116,15 @@ pub fn label(text: &str) -> String {
         })
         .collect()
 }
+/// Formats a display identity with its namespace.
+///
+/// # Arguments
+///
+/// * `id` — Exact wire identity to describe.
+///
+/// # Returns
+///
+/// Returns the escaped value followed by its identity kind in brackets.
 pub fn identity_label(id: &Identity) -> String {
     format!("{} [{}]", label(&id.value), id.kind)
 }

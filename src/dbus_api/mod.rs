@@ -32,6 +32,11 @@ pub struct CaptureState {
     pub error: String,
 }
 impl Default for CaptureState {
+    /// Creates a disabled capture status with no diagnostic.
+    ///
+    /// # Returns
+    ///
+    /// Returns the initial runtime capture state.
     fn default() -> Self {
         Self {
             status: "disabled".into(),
@@ -62,6 +67,17 @@ pub struct Settings {
     pub persistence_error: String,
 }
 impl Settings {
+    /// Builds a wire settings snapshot from durable preferences.
+    ///
+    /// # Arguments
+    ///
+    /// * `preferences` — Visible preference values to copy.
+    /// * `persistence_error` — Save diagnostic, or an empty string when no error should be
+    ///   reported.
+    ///
+    /// # Returns
+    ///
+    /// Returns a revision-zero settings snapshot for the server to publish.
     pub fn snapshot(preferences: &Preferences, persistence_error: String) -> Self {
         Self {
             revision: 0,
@@ -82,6 +98,20 @@ impl Settings {
         }
     }
 }
+/// Validates and decodes a logical identity from wire fields.
+///
+/// # Arguments
+///
+/// * `kind` — Identity namespace: desktop-entry or identity.
+/// * `value` — Exact identity value; desktop-entry values must be nonempty.
+///
+/// # Returns
+///
+/// Returns the corresponding typed application identity.
+///
+/// # Errors
+///
+/// Returns InvalidArgument for an unknown namespace or empty desktop-entry value.
 fn parse_identity(kind: &str, value: &str) -> Result<ApplicationId, Error> {
     match kind {
         "desktop-entry" if !value.is_empty() => Ok(ApplicationId::DesktopEntry(value.into())),
@@ -91,6 +121,15 @@ fn parse_identity(kind: &str, value: &str) -> Result<ApplicationId, Error> {
         )),
     }
 }
+/// Borrows the wire namespace and value of a logical application identity.
+///
+/// # Arguments
+///
+/// * `id` — Typed application identity to encode.
+///
+/// # Returns
+///
+/// Returns the wire kind and exact value without allocating.
 fn identity(id: &ApplicationId) -> (&str, &str) {
     match id {
         ApplicationId::DesktopEntry(value) => ("desktop-entry", value),
@@ -98,6 +137,17 @@ fn identity(id: &ApplicationId) -> (&str, &str) {
     }
 }
 impl State {
+    /// Builds a wire runtime snapshot from selection and actual capture state.
+    ///
+    /// # Arguments
+    ///
+    /// * `selection` — Player inventory and retained selection to summarize.
+    /// * `capture` — Actual capture status and diagnostic to copy.
+    ///
+    /// # Returns
+    ///
+    /// Returns a revision-zero snapshot with grouped application counts and current selection
+    /// availability.
     pub fn snapshot(selection: &Selection, capture: &CaptureState) -> Self {
         let mut applications = BTreeMap::<(String, String), Application>::new();
         // The selection registry iterates by service name, also making the
@@ -171,6 +221,20 @@ struct Service {
     requests: mpsc::Sender<Request>,
 }
 impl Service {
+    /// Queues a router mutation and waits for its response.
+    ///
+    /// # Arguments
+    ///
+    /// * `operation` — Validated operation for the daemon event loop.
+    ///
+    /// # Returns
+    ///
+    /// Returns the resulting runtime and settings snapshots.
+    ///
+    /// # Errors
+    ///
+    /// Returns Busy for a full queue, Unavailable if the router stops, or the operation error
+    /// returned by the daemon.
     async fn request(&self, operation: Operation) -> Result<Response, Error> {
         let (reply, receiver) = oneshot::channel();
         self.requests
@@ -190,38 +254,120 @@ impl Service {
 }
 #[zbus::interface(name = "org.mediarouter.MediaRouter1")]
 impl Service {
+    /// Reads the latest published runtime state.
+    ///
+    /// # Returns
+    ///
+    /// Returns a cloned state snapshot with its current revision.
     fn get_state(&self) -> State {
         self.state.borrow().clone()
     }
+    /// Requests a retained application selection through the daemon.
+    ///
+    /// # Arguments
+    ///
+    /// * `kind` — Identity namespace: desktop-entry or identity.
+    /// * `value` — Exact application value, nonempty for desktop-entry.
+    ///
+    /// # Returns
+    ///
+    /// Returns the resulting runtime state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an identity validation, queue, availability, persistence, or capture-reclaim error.
     async fn select_application(&self, kind: &str, value: &str) -> Result<State, Error> {
         let id = parse_identity(kind, value)?;
         self.request(Operation::Select(Some(id)))
             .await
             .map(|reply| reply.state)
     }
+    /// Requests that the daemon clear its retained application selection.
+    ///
+    /// # Returns
+    ///
+    /// Returns the resulting runtime state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a queue, availability, persistence, or capture-reclaim error.
     async fn clear_selection(&self) -> Result<State, Error> {
         self.request(Operation::Select(None))
             .await
             .map(|reply| reply.state)
     }
+    /// Requests persisted capture intent and the corresponding backend transition.
+    ///
+    /// # Arguments
+    ///
+    /// * `enabled` — Whether hardware media-key capture should be enabled.
+    ///
+    /// # Returns
+    ///
+    /// Returns the resulting runtime state after a successful transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns a queue, availability, persistence, or capture-transition error.
     async fn set_capture_enabled(&self, enabled: bool) -> Result<State, Error> {
         self.request(Operation::Capture(enabled))
             .await
             .map(|reply| reply.state)
     }
+    /// Requests best-effort priority renewal for active media-key capture.
+    ///
+    /// # Returns
+    ///
+    /// Returns the resulting runtime state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a queue or availability error, or CaptureFailed if capture is absent or reclaim
+    /// fails.
     async fn reclaim_media_keys(&self) -> Result<State, Error> {
         self.request(Operation::Reclaim)
             .await
             .map(|reply| reply.state)
     }
+    /// Reads the latest published settings state.
+    ///
+    /// # Returns
+    ///
+    /// Returns a cloned settings snapshot with its current revision.
     fn get_settings(&self) -> Settings {
         self.settings.borrow().clone()
     }
+    /// Requests a persisted automatic-selection preference change.
+    ///
+    /// # Arguments
+    ///
+    /// * `enabled` — Whether eligible newly appearing applications should become selected.
+    ///
+    /// # Returns
+    ///
+    /// Returns the resulting settings snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns a queue, availability, or persistence error.
     async fn set_auto_select_new(&self, enabled: bool) -> Result<Settings, Error> {
         self.request(Operation::AutoSelectNew(enabled))
             .await
             .map(|reply| reply.settings)
     }
+    /// Validates and replaces the persisted automatic-selection exclusion list.
+    ///
+    /// # Arguments
+    ///
+    /// * `exclusions` — Exact logical identities to exclude; duplicates are removed after sorting.
+    ///
+    /// # Returns
+    ///
+    /// Returns the resulting settings snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an identity validation, queue, availability, or persistence error.
     async fn set_auto_select_exclusions(
         &self,
         mut exclusions: Vec<Identity>,
@@ -236,9 +382,37 @@ impl Service {
             .await
             .map(|reply| reply.settings)
     }
+    /// Emits the settings snapshot change signal.
+    ///
+    /// # Arguments
+    ///
+    /// * `emitter` — Connection and object path from which to emit.
+    /// * `settings` — Latest settings snapshot with its published revision.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) after signal emission.
+    ///
+    /// # Errors
+    ///
+    /// Returns a D-Bus signal emission error.
     #[zbus(signal)]
     async fn settings_changed(emitter: &SignalEmitter<'_>, settings: &Settings)
     -> zbus::Result<()>;
+    /// Emits the runtime state snapshot change signal.
+    ///
+    /// # Arguments
+    ///
+    /// * `emitter` — Connection and object path from which to emit.
+    /// * `state` — Latest runtime snapshot with its published revision.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) after signal emission.
+    ///
+    /// # Errors
+    ///
+    /// Returns a D-Bus signal emission error.
     #[zbus(signal)]
     async fn state_changed(emitter: &SignalEmitter<'_>, state: &State) -> zbus::Result<()>;
 }
@@ -250,6 +424,24 @@ pub struct Server {
     publisher: tokio::task::JoinHandle<zbus::Result<()>>,
 }
 impl Server {
+    /// Exports the router API and starts publishing snapshot changes.
+    ///
+    /// Does not replace an existing daemon or queue behind its bus name.
+    ///
+    /// # Arguments
+    ///
+    /// * `connection` — Session-bus connection on which to export the service.
+    /// * `initial` — Initial runtime state snapshot.
+    /// * `initial_settings` — Initial settings snapshot.
+    ///
+    /// # Returns
+    ///
+    /// Returns the server and a bounded mutation-request receiver for the daemon.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if object export, exclusive bus-name acquisition, or signal-emitter setup
+    /// fails.
     pub async fn start(
         connection: &Connection,
         initial: State,
@@ -305,9 +497,27 @@ impl Server {
             inbox,
         ))
     }
+    /// Reads the server's latest settings snapshot.
+    ///
+    /// # Returns
+    ///
+    /// Returns a clone of the current settings and revision.
     pub fn settings(&self) -> Settings {
         self.settings.borrow().clone()
     }
+    /// Publishes settings only when their content changes.
+    ///
+    /// # Arguments
+    ///
+    /// * `next` — Candidate settings snapshot; its incoming revision is ignored.
+    ///
+    /// # Returns
+    ///
+    /// Returns the effective snapshot, incrementing the current revision only for a content change.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a content change would overflow the revision counter.
     pub fn publish_settings(&self, mut next: Settings) -> Settings {
         let current = self.settings.borrow();
         next.revision = current.revision;
@@ -322,6 +532,19 @@ impl Server {
         self.settings.send_replace(next.clone());
         next
     }
+    /// Publishes runtime state only when its content changes.
+    ///
+    /// # Arguments
+    ///
+    /// * `next` — Candidate runtime snapshot; its incoming revision is ignored.
+    ///
+    /// # Returns
+    ///
+    /// Returns the effective snapshot, incrementing the current revision only for a content change.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a content change would overflow the revision counter.
     pub fn publish(&self, mut next: State) -> State {
         let current = self.state.borrow();
         next.revision = current.revision;
@@ -336,6 +559,15 @@ impl Server {
         self.state.send_replace(next.clone());
         next
     }
+    /// Waits for the background snapshot publisher to finish.
+    ///
+    /// # Returns
+    ///
+    /// Returns the publisher's completion result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if publication fails, times out, or the task cannot be joined.
     pub async fn stopped(&mut self) -> zbus::Result<()> {
         (&mut self.publisher)
             .await
@@ -343,6 +575,7 @@ impl Server {
     }
 }
 impl Drop for Server {
+    /// Aborts the background snapshot publisher when the server is dropped.
     fn drop(&mut self) {
         self.publisher.abort();
     }

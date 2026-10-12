@@ -3,6 +3,19 @@ use media_router_tray::{client, model::View, tray::Tray};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{Notify, mpsc, watch};
 
+/// Runs the independent tray client until Quit or a termination signal.
+///
+/// Reads process arguments; --wait-for-host enables waiting for a desktop tray host during login
+/// startup.
+///
+/// # Returns
+///
+/// Returns Ok(()) after help or orderly tray shutdown.
+///
+/// # Errors
+///
+/// Returns an error for invalid arguments, session-bus setup, tray-name contention, signal setup,
+/// or tray-host registration.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();

@@ -11,6 +11,19 @@ const PATH: &str = "/org/gnome/SettingsDaemon/MediaKeys";
 const INTERFACE: &str = "org.gnome.SettingsDaemon.MediaKeys";
 const LOCKER: &str = "org.cinnamon.ScreenSaver";
 
+/// Parses the media-key probe lifetime and contender options.
+///
+/// # Returns
+///
+/// Returns the lifetime in seconds and contender flag, or Ok(None) after printing help.
+///
+/// # Errors
+///
+/// Returns an error for unknown, duplicate, missing, or out-of-range argument values.
+///
+/// # Panics
+///
+/// Panics if a process argument is not valid Unicode.
 fn arguments() -> Result<Option<(u64, bool)>> {
     let mut seconds = 600;
     let mut contender = false;
@@ -38,6 +51,20 @@ fn arguments() -> Result<Option<(u64, bool)>> {
     Ok(Some((seconds, contender)))
 }
 
+/// Reports Cinnamon transport bindings and checks lock-screen shortcut support.
+///
+/// # Returns
+///
+/// Returns Ok(()) when required schemas, bindings, and lock-screen shortcuts are available.
+///
+/// # Errors
+///
+/// Returns an error for missing schemas, disabled bindings, or disabled lock-screen shortcuts.
+///
+/// # Panics
+///
+/// GSettings may panic if an installed schema lacks an expected key or has an incompatible key
+/// type.
 fn check_settings() -> Result<()> {
     let source = gio::SettingsSchemaSource::default().ok_or("no GSettings schemas")?;
     let schema = source
@@ -63,6 +90,21 @@ fn check_settings() -> Result<()> {
 
 // No owner means no snapshot, not a failed media-key registration. Avoid
 // activating or keeping the screensaver alive merely to annotate key events.
+/// Reads screensaver activity without activating or retaining the service.
+///
+/// Screensaver disappearance does not invalidate media-key registration; query failures are logged.
+///
+/// # Arguments
+///
+/// * `connection` — Session-bus connection used for owner lookup and querying.
+///
+/// # Returns
+///
+/// Returns the active state, or Ok(None) when the service is absent or its activity query fails.
+///
+/// # Errors
+///
+/// Returns an error if bus setup or owner lookup fails for a reason other than no owner.
 async fn screen_snapshot(connection: &Connection) -> Result<Option<bool>> {
     let bus = DBusProxy::new(connection).await?;
     let owner = match bus.get_name_owner(LOCKER.try_into()?).await {
@@ -87,6 +129,26 @@ async fn screen_snapshot(connection: &Connection) -> Result<Option<bool>> {
     }
 }
 
+/// Registers the probe and logs media-key and screen-state events.
+///
+/// The caller releases registration after completion or failure. This listener never sends playback
+/// commands or changes settings.
+///
+/// # Arguments
+///
+/// * `connection` — Session-bus connection used to monitor service ownership.
+/// * `app` — Probe application identifier used for registration and signal filtering.
+/// * `proxy` — Media-key API proxy pinned to its captured unique owner.
+/// * `seconds` — Maximum listening lifetime in seconds.
+///
+/// # Returns
+///
+/// Returns Ok(()) after the lifetime expires or a termination signal arrives.
+///
+/// # Errors
+///
+/// Returns an error for registration or monitoring failure, invalid signals, or media-key service
+/// replacement.
 async fn listen(connection: &Connection, app: &str, proxy: &Proxy<'_>, seconds: u64) -> Result<()> {
     // Subscribe before registering, so even the first event is observable.
     let mut keys = proxy.receive_signal("MediaPlayerKeyPressed").await?;
@@ -160,6 +222,18 @@ async fn listen(connection: &Connection, app: &str, proxy: &Proxy<'_>, seconds: 
     Ok(())
 }
 
+/// Runs the log-only Cinnamon media-key compatibility probe.
+///
+/// Reads process arguments and releases the listener after errors as well as normal completion.
+///
+/// # Returns
+///
+/// Returns Ok(()) after help or completed listening and disconnection.
+///
+/// # Errors
+///
+/// Returns an error for arguments, settings checks, bus setup, registration, monitoring, or
+/// disconnection.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let Some((seconds, contender)) = arguments()? else {

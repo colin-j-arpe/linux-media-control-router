@@ -25,6 +25,19 @@ pub(super) struct Capture {
     stopped: bool,
 }
 impl Capture {
+    /// Registers Cinnamon D-Bus media-key capture and starts event monitoring.
+    ///
+    /// Recovers old X11 binding journals before registration. Custom or disabled transport
+    /// shortcuts are preserved and rejected for this backend.
+    ///
+    /// # Returns
+    ///
+    /// Returns an active capture holding the recovery lock and listener connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported session, recovery or settings failure, unavailable
+    /// services, name contention, or registration failure.
     pub(super) async fn start() -> Result<Self> {
         if std::env::var("XDG_SESSION_TYPE").as_deref() != Ok("x11")
             || !std::env::var("XDG_CURRENT_DESKTOP")
@@ -116,6 +129,16 @@ impl Capture {
         }
         Ok(capture)
     }
+    /// Refreshes best-effort Cinnamon media-key listener priority.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) after registering with the same media-key service owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if settings are incompatible, the service owner changed, or a bus operation
+    /// fails.
     pub(super) async fn reclaim(&mut self) -> Result<()> {
         validate_settings(&self.settings)?;
         let bus = DBusProxy::new(&self.connection).await?;
@@ -128,6 +151,16 @@ impl Capture {
             .await?;
         Ok(())
     }
+    /// Waits for a transport action or a screen-state reclaim request.
+    ///
+    /// # Returns
+    ///
+    /// Returns the next buffered capture event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for incompatible shortcut changes, worker termination, or signal-monitoring
+    /// failures.
     pub(super) async fn next(&mut self) -> Result<Event> {
         loop {
             validate_settings(&self.settings)?;
@@ -137,6 +170,16 @@ impl Capture {
             }
         }
     }
+    /// Stops event monitoring and closes the Cinnamon listener connection.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) after disconnection, or immediately if already stopped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if proxy construction or connection closure fails; a failed release reply
+    /// is logged after successful closure.
     pub(super) async fn stop(&mut self) -> Result<()> {
         if self.stopped {
             return Ok(());
@@ -157,11 +200,25 @@ impl Capture {
     }
 }
 impl Drop for Capture {
+    /// Aborts the Cinnamon event worker when the capture handle is dropped.
     fn drop(&mut self) {
         self.worker.abort();
     }
 }
 
+/// Checks that Cinnamon transport shortcuts contain only standard hardware bindings.
+///
+/// # Arguments
+///
+/// * `settings` — Cinnamon settings adapter to inspect.
+///
+/// # Returns
+///
+/// Returns Ok(()) when every transport shortcut is compatible with D-Bus capture.
+///
+/// # Errors
+///
+/// Returns an error for unreadable, disabled, or customized transport shortcuts.
 fn validate_settings(settings: &Cinnamon) -> Result<()> {
     for (key, expected) in BINDINGS {
         let values = settings.read(key)?.effective;

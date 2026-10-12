@@ -18,6 +18,11 @@ pub enum TransportAction {
 }
 
 impl TransportAction {
+    /// Maps a transport action to its MPRIS method name.
+    ///
+    /// # Returns
+    ///
+    /// Returns the corresponding static D-Bus method name.
     fn method(self) -> &'static str {
         match self {
             Self::PlayPause => "PlayPause",
@@ -31,6 +36,19 @@ impl TransportAction {
 impl FromStr for TransportAction {
     type Err = &'static str;
 
+    /// Parses one supported terminal transport command.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` — Exact lowercase command: play-pause, stop, previous, or next.
+    ///
+    /// # Returns
+    ///
+    /// Returns the corresponding transport action.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic for any other input.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "play-pause" => Ok(Self::PlayPause),
@@ -43,6 +61,19 @@ impl FromStr for TransportAction {
 }
 
 impl fmt::Display for TransportAction {
+    /// Formats an action as its terminal command name.
+    ///
+    /// # Arguments
+    ///
+    /// * `formatter` — Formatter receiving the command text.
+    ///
+    /// # Returns
+    ///
+    /// Returns the formatting result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the formatter cannot accept the output.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::PlayPause => "play-pause",
@@ -82,11 +113,35 @@ enum PreparationError {
 }
 
 impl From<zbus::Error> for PreparationError {
+    /// Wraps a D-Bus failure as a preparation query error.
+    ///
+    /// # Arguments
+    ///
+    /// * `error` — D-Bus error encountered before dispatch.
+    ///
+    /// # Returns
+    ///
+    /// Returns a preparation error containing the original error.
     fn from(error: zbus::Error) -> Self {
         Self::Query(error)
     }
 }
 
+/// Checks whether a service still belongs to the captured unique owner.
+///
+/// # Arguments
+///
+/// * `bus` — Bus proxy used to query name ownership.
+/// * `service` — Well-known MPRIS service name.
+/// * `owner` — Unique owner captured for this command.
+///
+/// # Returns
+///
+/// Returns true for an exact owner match, or false for a missing or replaced owner.
+///
+/// # Errors
+///
+/// Returns a preparation error for an invalid service name or failed ownership query.
 async fn owner_matches(
     bus: &DBusProxy<'_>,
     service: &str,
@@ -102,6 +157,20 @@ async fn owner_matches(
     }
 }
 
+/// Checks a live Boolean capability before sending a command.
+///
+/// # Arguments
+///
+/// * `proxy` — Uncached player proxy used to read the capability.
+/// * `property` — Required MPRIS Boolean capability name.
+///
+/// # Returns
+///
+/// Returns Ok(()) when the capability is true.
+///
+/// # Errors
+///
+/// Returns Unsupported when false, or a query error if reading fails.
 async fn require(proxy: &Proxy<'_>, property: &'static str) -> Result<(), PreparationError> {
     if proxy.get_property::<bool>(property).await? {
         Ok(())
@@ -110,6 +179,23 @@ async fn require(proxy: &Proxy<'_>, property: &'static str) -> Result<(), Prepar
     }
 }
 
+/// Validates ownership and live capabilities for a transport command.
+///
+/// # Arguments
+///
+/// * `connection` — Session-bus connection for checks and the resulting proxy.
+/// * `service` — Well-known name whose ownership must remain unchanged.
+/// * `owner` — Captured unique owner to address.
+/// * `action` — Transport action whose capabilities must be checked.
+///
+/// # Returns
+///
+/// Returns an uncached proxy pinned to the captured owner.
+///
+/// # Errors
+///
+/// Returns a skip reason, query failure, or invalid playback status before any transport method is
+/// sent.
 async fn prepare<'a>(
     connection: &'a Connection,
     service: &str,
@@ -156,10 +242,22 @@ async fn prepare<'a>(
     Ok(proxy)
 }
 
-/// Dispatch once to the instance captured for this input. Never retarget/retry.
+/// Dispatches one command to the instance captured when input arrived.
 ///
-/// `current` tracks selection changes while asynchronous checks run. Property
-/// reads are uncached, and neither checks nor the method wait indefinitely.
+/// Checks use live properties and bounded waits. The command is never retargeted or retried,
+/// including after an uncertain reply.
+///
+/// # Arguments
+///
+/// * `connection` — Session-bus connection used for checks and dispatch.
+/// * `current` — Latest selection state, checked before and after asynchronous preparation.
+/// * `target` — Selection snapshot captured for this input.
+/// * `action` — Transport method to attempt once.
+///
+/// # Returns
+///
+/// Returns the acknowledgement, skip reason, preparation failure, player error, or uncertain
+/// execution outcome.
 pub async fn dispatch(
     connection: &Connection,
     current: &watch::Receiver<SelectionState>,

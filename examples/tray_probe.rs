@@ -14,6 +14,15 @@ struct Probe {
 }
 
 impl Probe {
+    /// Reads the selected sample player's display label.
+    ///
+    /// # Returns
+    ///
+    /// Returns the static label for the selected sample index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the selected index is outside the three sample players.
     fn label(&self) -> &'static str {
         [
             "Sample music player",
@@ -21,6 +30,15 @@ impl Probe {
             "Sample player — 音楽",
         ][self.selected]
     }
+    /// Prints a sample action and the current in-memory probe state.
+    ///
+    /// # Arguments
+    ///
+    /// * `action` — Name of the sample interaction to report.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the selected sample index is invalid.
     fn report(&self, action: &str) {
         println!(
             "PROBE EVENT: {action}; selected={}; unavailable={}; mro={}; excluded={}; extra={}",
@@ -37,18 +55,42 @@ impl ksni::Tray for Probe {
     // Ask the tray host to open the menu on primary (usually left-click) activation.
     const MENU_ON_ACTIVATE: bool = true;
 
+    /// Supplies the stable StatusNotifier identifier for the compatibility probe.
+    ///
+    /// # Returns
+    ///
+    /// Returns media-router-tray-probe.
     fn id(&self) -> String {
         "media-router-tray-probe".into()
     }
+    /// Supplies the probe's display title.
+    ///
+    /// # Returns
+    ///
+    /// Returns Media Router compatibility probe.
     fn title(&self) -> String {
         "Media Router compatibility probe".into()
     }
+    /// Renders sample tray icons with the simulated availability badge.
+    ///
+    /// # Returns
+    ///
+    /// Returns ARGB icons at 24, 32, and 48 pixels.
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         [24, 32, 48]
             .into_iter()
             .map(|size| icon(size, self.unavailable))
             .collect()
     }
+    /// Builds a tooltip describing the selected sample player.
+    ///
+    /// # Returns
+    ///
+    /// Returns the probe title and simulated availability description.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the selected sample index is invalid.
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {
             title: self.title(),
@@ -64,6 +106,15 @@ impl ksni::Tray for Probe {
             ..Default::default()
         }
     }
+    /// Builds sample controls for testing desktop tray-host behavior.
+    ///
+    /// # Returns
+    ///
+    /// Returns the menu whose callbacks update only in-memory probe data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the selected sample index is invalid.
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let mut options = vec![
             RadioItem {
@@ -175,9 +226,19 @@ impl ksni::Tray for Probe {
             .into(),
         ]
     }
+    /// Logs that the tray host requested the sample menu.
     fn menu_about_to_show(&mut self) {
         println!("PROBE MENU: host requested menu");
     }
+    /// Logs loss of the tray host and requests probe shutdown.
+    ///
+    /// # Arguments
+    ///
+    /// * `reason` — Host availability diagnostic supplied by ksni.
+    ///
+    /// # Returns
+    ///
+    /// Returns false so the probe does not wait for the host to return.
     fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
         eprintln!("PROBE HOST LOST: {reason:?}");
         self.quit.notify_one();
@@ -185,8 +246,22 @@ impl ksni::Tray for Probe {
     }
 }
 
-/// Direct ARGB artwork keeps the probe independent of installed icon themes.
-/// The badge is composed into the main icon, without relying on host overlays.
+/// Renders a square ARGB sample icon with an optional warning badge.
+///
+/// Direct artwork avoids dependence on installed icon themes or host overlays.
+///
+/// # Arguments
+///
+/// * `size` — Positive pixel width and height, small enough for size * size * 4 to fit in i32.
+/// * `unavailable` — Whether to compose a red warning badge into the icon.
+///
+/// # Returns
+///
+/// Returns the icon dimensions and ARGB pixel data.
+///
+/// # Panics
+///
+/// Panics if pixel-buffer sizing overflows in a checked build or exceeds allocation capacity.
 fn icon(size: i32, unavailable: bool) -> ksni::Icon {
     let mut argb_data = Vec::with_capacity((size * size * 4) as usize);
     for y in 0..size {
@@ -220,6 +295,22 @@ fn icon(size: i32, unavailable: bool) -> ksni::Icon {
     }
 }
 
+/// Runs the sample tray compatibility probe until timeout or shutdown.
+///
+/// Reads an optional --seconds lifetime from process arguments; sample controls never mutate the
+/// daemon.
+///
+/// # Returns
+///
+/// Returns Ok(()) after help or orderly probe shutdown.
+///
+/// # Errors
+///
+/// Returns an error for invalid arguments, signal setup, or tray registration.
+///
+/// # Panics
+///
+/// Panics if a process argument is not valid Unicode.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
